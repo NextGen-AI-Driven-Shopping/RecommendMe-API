@@ -84,44 +84,88 @@ questions to frontend         │  Recommender Service  │  services/recommende
 ```
 recommendme-api/
 │
-├── main.py                        ← FastAPI app entry point, middleware, CORS
-├── requirements.txt               ← All Python dependencies
-├── .env.example                   ← Environment variable template
+├── app/                                    ← Main application package
+│   ├── __init__.py
+│   ├── main.py                             ← FastAPI app, lifespan, middleware registration
+│   │
+│   ├── api/                                ← All route handlers
+│   │   ├── __init__.py
+│   │   ├── deps.py                         ← Shared dependencies (session, rate limiter injection)
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── router.py                   ← Aggregates all v1 routes into one router
+│   │       ├── query.py                    ← POST /v1/query  (core endpoint)
+│   │       └── health.py                   ← GET /v1/health  (system status)
+│   │
+│   ├── services/                           ← Business logic — one job per file
+│   │   ├── __init__.py
+│   │   ├── vagueness.py                    ← Tier 1 AI: Ollama check + GPT-4o-mini fallback
+│   │   ├── recommender.py                  ← Tier 2 AI: GPT-4o intent + category generation
+│   │   ├── products.py                     ← SerpAPI fetch + affiliate tag injection
+│   │   ├── ranking.py                      ← GPT-4o product ranking + explanation generation
+│   │   └── cache.py                        ← Redis get/set for product query results
+│   │
+│   ├── models/                             ← All Pydantic models, split by purpose
+│   │   ├── __init__.py
+│   │   ├── requests.py                     ← QueryRequest, ConversationMessage
+│   │   ├── responses.py                    ← QueryResponse, ProductCard, CategoryResult
+│   │   └── internal.py                     ← Internal types not exposed to API consumers
+│   │
+│   ├── prompts/                            ← AI prompt templates, versioned and isolated
+│   │   ├── __init__.py
+│   │   ├── vagueness_check.py              ← Tier 1 prompt: CLEAR / VAGUE classification
+│   │   ├── intent_extraction.py            ← Tier 2 prompt: extract categories from context
+│   │   └── product_ranking.py              ← Tier 2 prompt: rank products + write reasons
+│   │
+│   ├── core/                               ← App config, exceptions, cross-cutting concerns
+│   │   ├── __init__.py
+│   │   ├── config.py                       ← All settings loaded from .env via Pydantic BaseSettings
+│   │   ├── exceptions.py                   ← Custom exception classes + HTTP error handlers
+│   │   ├── logger.py                       ← Structured JSON logging setup
+│   │   ├── middleware.py                   ← Request logging, timing, correlation ID middleware
+│   │   └── security.py                     ← Input sanitization, CORS config, rate limit rules
+│   │
+│   └── utils/                              ← Stateless helper functions
+│       ├── __init__.py
+│       ├── session.py                      ← In-memory session store (dict keyed by session_id)
+│       ├── validators.py                   ← Query length checks, injection pattern detection
+│       └── formatters.py                   ← Response assembly, affiliate URL tagging
+│
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py                         ← Shared pytest fixtures, mock clients, test app setup
+│   ├── unit/
+│   │   ├── __init__.py
+│   │   ├── test_vagueness.py               ← Unit: vagueness classifier logic
+│   │   ├── test_recommender.py             ← Unit: intent extraction + category generation
+│   │   ├── test_products.py                ← Unit: SerpAPI fetch, mock responses
+│   │   ├── test_ranking.py                 ← Unit: product ranking and explanation
+│   │   ├── test_prompts.py                 ← Unit: prompt output format validation
+│   │   ├── test_validators.py              ← Unit: input validation edge cases
+│   │   └── test_formatters.py              ← Unit: affiliate tagging, response shaping
+│   └── integration/
+│       ├── __init__.py
+│       ├── test_query_flow.py              ← Full flow: vague query → follow-up → recommendations
+│       └── test_health.py                  ← Health endpoint + service availability checks
+│
+├── scripts/                                ← Developer utility scripts, not part of the app
+│   ├── test_prompt.py                      ← Run a prompt against GPT-4o directly from terminal
+│   ├── mock_serp.py                        ← Generate mock SerpAPI responses for offline testing
+│   └── check_ollama.py                     ← Verify Ollama is running and model is loaded
+│
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                          ← Run tests + lint on every PR
+│       └── deploy.yml                      ← Auto-deploy to Railway on merge to main
+│
+├── main.py                                 ← Entry point — imports and runs app from app/
+├── requirements.txt                        ← Production dependencies only
+├── requirements-dev.txt                    ← Dev + test dependencies (pytest, httpx, ruff)
+├── .env.example                            ← All env vars documented with placeholder values
 ├── .gitignore
-├── README.md
-│
-├── routes/
-│   ├── __init__.py
-│   ├── query.py                   ← POST /v1/query  (core endpoint)
-│   └── health.py                  ← GET /v1/health  (status check)
-│
-├── services/
-│   ├── __init__.py
-│   ├── vagueness.py               ← Tier 1 AI: Ollama vagueness check + fallback
-│   ├── recommender.py             ← Tier 2 AI: GPT-4o intent extraction + categories
-│   └── products.py                ← SerpAPI product fetch + GPT-4o ranking
-│
-├── models/
-│   ├── __init__.py
-│   └── schemas.py                 ← All Pydantic request/response models
-│
-├── prompts/
-│   ├── vagueness_check.py         ← Tier 1 prompt template
-│   ├── intent_extraction.py       ← Tier 2 prompt: category generation
-│   └── product_ranking.py         ← Tier 2 prompt: rank + explain products
-│
-├── core/
-│   ├── __init__.py
-│   ├── config.py                  ← App settings loaded from .env
-│   ├── exceptions.py              ← Custom exception classes
-│   └── logger.py                  ← Structured logging setup
-│
-└── tests/
-    ├── __init__.py
-    ├── test_vagueness.py          ← Unit tests for vagueness classifier
-    ├── test_recommender.py        ← Unit tests for recommendation logic
-    ├── test_products.py           ← Unit tests for product fetching
-    └── test_routes.py             ← Integration tests for API endpoints
+├── Dockerfile                              ← Production container definition
+├── docker-compose.yml                      ← Local dev: app + Redis side by side
+└── README.md
 ```
 
 ---
