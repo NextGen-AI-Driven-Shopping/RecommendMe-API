@@ -1,0 +1,1 @@
+"""RecommendMe API application package."""
