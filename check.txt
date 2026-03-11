@@ -1,0 +1,1 @@
+This file is to check if it is connected to remote repo
