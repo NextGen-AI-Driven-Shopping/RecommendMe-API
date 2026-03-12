@@ -7,8 +7,7 @@ The model must return exactly one word: CLEAR or VAGUE.
 
 SYSTEM_PROMPT = """You are a query classification assistant.
 
-Your task is to determine whether a user's product search query contains
-enough context to generate useful product recommendations.
+Return ONLY one word:
 
 Respond with exactly one word:
 
