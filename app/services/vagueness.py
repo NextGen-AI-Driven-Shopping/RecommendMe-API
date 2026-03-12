@@ -13,32 +13,101 @@ Returns:
   "VAGUE"  — query needs a follow-up clarification question.
 """
 
-from app.models.internal import VaguenessResult
+import os
+import httpx
+from dataclasses import dataclass
+
+from app.prompts.vagueness_check import build_vagueness_prompt
+from app.core.config import get_settings
 
 
-async def classify_vagueness(
-    query: str,
-    context: list | None = None,
-) -> VaguenessResult:
+@dataclass
+class VaguenessResult:
+    classification: str
+    follow_ups: list[str] | None = None
+
+
+class VaguenessServiceError(Exception):
+    pass
+
+
+async def classify_vagueness(query: str, allow_fallback: bool = True) -> VaguenessResult:
     """
-    Classify a query as CLEAR or VAGUE.
+    Classify whether a query is CLEAR or VAGUE.
 
     Args:
-        query:   The raw user query string.
-        context: Optional list of prior conversation messages.
+        query: user search query
+        allow_fallback: enable OpenAI fallback if Ollama fails
 
     Returns:
-        VaguenessResult with classification and optional follow-up question.
+        VaguenessResult
     """
-    # TODO: implement Ollama call with GPT-4o-mini fallback
-    pass
 
+    settings = get_settings()
 
-async def _call_ollama(prompt_messages: list) -> str:
-    """Send a prompt to the local Ollama instance and return the response text."""
-    pass
+    base_url = settings.ollama_base_url.rstrip("/")
+    model = settings.ollama_model
 
+    messages = build_vagueness_prompt(query)
 
-async def _call_openai_fallback(prompt_messages: list) -> str:
-    """Send a prompt to GPT-4o-mini as a fallback and return the response text."""
-    pass
+    try:
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+
+            response = await client.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False
+                }
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            text = data["message"]["content"].strip().upper()
+
+            if "CLEAR" in text:
+                return VaguenessResult(classification="CLEAR")
+
+            if "VAGUE" in text:
+                return VaguenessResult(classification="VAGUE")
+
+            raise VaguenessServiceError(
+                f"Unexpected model response: {text}"
+            )
+
+    except Exception as exc:
+
+        if not allow_fallback:
+            raise
+
+        # OpenAI fallback
+        try:
+            import openai
+
+            openai.api_key = os.getenv("OPENAI_API_KEY")
+
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=messages,
+            )
+
+            text = response["choices"][0]["message"]["content"].strip().upper()
+
+            if "CLEAR" in text:
+                return VaguenessResult(classification="CLEAR")
+
+            if "VAGUE" in text:
+                return VaguenessResult(classification="VAGUE")
+
+            raise VaguenessServiceError(
+                f"Unexpected fallback response: {text}"
+            )
+
+        except Exception as fallback_exc:
+            raise VaguenessServiceError(
+                f"Ollama failed: {exc} | Fallback failed: {fallback_exc}"
+            )
