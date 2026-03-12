@@ -14,9 +14,12 @@ import re
 MAX_QUERY_LENGTH: int = 500
 MIN_QUERY_LENGTH: int = 3
 
-# Patterns that indicate attempted injection or abuse
+# Patterns that indicate attempted injection or abuse.
+# The phrase patterns are intentionally broad to catch word-order variations
+# (e.g. "ignore all previous instructions" and "ignore previous instructions"
+# are both blocked by the first rule).
 _INJECTION_PATTERNS: list[str] = [
-    r"ignore\s+(previous|all)\s+instructions",
+    r"ignore\s+(?:\w+\s+){0,3}instructions",  # catch word-order variants of role-override
     r"you\s+are\s+now\s+",
     r"\bact\s+as\b",
     r"\bdan\b",                       # "Do Anything Now" jailbreak keyword
