@@ -1,3 +1,15 @@
+# =============================================================================
+# Continuous Integration — lint + test
+# =============================================================================
+# This workflow runs on every push to main/develop and on pull requests.
+# It is intentionally kept separate from the deploy workflow so CI can run
+# freely while deployment remains disabled during the development phase.
+#
+# Prerequisites before enabling the test suite:
+#   - OPENAI_API_KEY and SERPAPI_API_KEY secrets must be added to GitHub.
+#   - The Redis service is provided by the workflow itself (no external dep).
+# =============================================================================
+
 name: CI
 
 on:
@@ -45,6 +57,7 @@ jobs:
       - name: Run tests
         env:
           OPENAI_API_KEY: test-key
-          SERPAPI_API_KEY: test-key
+          SERPAPI_KEY: test-key
           REDIS_URL: redis://localhost:6379
         run: pytest tests/ -v --tb=short --cov=app --cov-report=term-missing
+

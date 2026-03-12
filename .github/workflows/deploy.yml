@@ -1,3 +1,16 @@
+# =============================================================================
+# Deploy to Railway
+# =============================================================================
+# Deployment is intentionally DISABLED during the active development phase.
+# The `if: false` condition on the deploy job prevents it from executing even
+# when code is pushed to main.
+#
+# To re-enable deployment:
+#   1. Remove (or change) the `if: false` line in the deploy job below.
+#   2. Add the RAILWAY_TOKEN secret to the GitHub repository settings.
+#   3. Confirm all integration tests pass on the CI workflow first.
+# =============================================================================
+
 name: Deploy to Railway
 
 on:
@@ -7,6 +20,10 @@ on:
 
 jobs:
   deploy:
+    # Deployment temporarily disabled during the development phase.
+    # This will be enabled once backend integration is completed and all
+    # services have been fully implemented and tested.
+    if: false
     runs-on: ubuntu-latest
 
     steps:

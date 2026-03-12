@@ -50,3 +50,4 @@ class HealthResponse(BaseModel):
     ollama: Optional[str] = None
     redis: Optional[str] = None
     openai: Optional[str] = None
+    serpapi: Optional[str] = None

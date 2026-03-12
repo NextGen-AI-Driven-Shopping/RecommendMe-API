@@ -2,7 +2,12 @@
 Response formatting utilities.
 
 Assembles final QueryResponse objects from ranked product data and
-handles affiliate URL tag injection for all outbound product links.
+handles optional affiliate URL tag injection for all outbound product links.
+
+Public API:
+  build_recommendation_response()  — wraps ranked results in a QueryResponse.
+  build_clarification_response()   — wraps a follow-up question in a QueryResponse.
+  apply_affiliate_tags()           — rewrites product URLs with the affiliate tag.
 """
 
 from app.core.config import get_settings
@@ -55,13 +60,14 @@ def tag_affiliate_url(url: str) -> str:
     """
     Append the configured affiliate tag to a product URL.
 
-    If no affiliate tag is configured, the original URL is returned unchanged.
+    If AFFILIATE_TAG is empty or not configured, the original URL is
+    returned unchanged.
     """
     settings = get_settings()
-    if not settings.affiliate_tag:
+    if not settings.AFFILIATE_TAG:
         return url
     separator = "&" if "?" in url else "?"
-    return f"{url}{separator}tag={settings.affiliate_tag}"
+    return f"{url}{separator}tag={settings.AFFILIATE_TAG}"
 
 
 def apply_affiliate_tags(products: list[ProductCard]) -> list[ProductCard]:
