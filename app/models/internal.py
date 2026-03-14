@@ -24,4 +24,4 @@ class VaguenessResult(BaseModel):
 
     classification: str  # "CLEAR" or "VAGUE"
     confidence: Optional[float] = None
-    follow_up_question: Optional[str] = None
+    follow_ups: Optional[List[str]] = None

@@ -80,6 +80,14 @@ async def classify_vagueness(
     model = settings.OLLAMA_MODEL
     messages = build_vagueness_prompt(query)
 
+    def _default_follow_ups() -> list[str]:
+        topic = query[:80].strip()
+        return [
+            f"What exact type of {topic} are you looking for?",
+            "What budget range should I target?",
+            "Any must-have features, brand preferences, or constraints?",
+        ]
+
     # ------------------------------------------------------------------ #
     # Primary: Ollama (local model)
     # ------------------------------------------------------------------ #
@@ -100,7 +108,7 @@ async def classify_vagueness(
 
         if "VAGUE" in text:
             logger.info(f"Ollama classified query as VAGUE")
-            return VaguenessResult(classification="VAGUE")
+            return VaguenessResult(classification="VAGUE", follow_ups=_default_follow_ups())
 
         raise VaguenessServiceError(f"Unexpected Ollama response: {text!r}")
 
@@ -143,7 +151,7 @@ async def classify_vagueness(
 
         if "VAGUE" in text:
             logger.info("OpenAI fallback classified query as VAGUE")
-            return VaguenessResult(classification="VAGUE")
+            return VaguenessResult(classification="VAGUE", follow_ups=_default_follow_ups())
 
         raise VaguenessServiceError(f"Unexpected OpenAI fallback response: {text!r}")
 

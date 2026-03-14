@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # OpenAI API key — required in production, optional during development.
     OPENAI_API_KEY: str = Field(default="")
+    OPENAI_MODEL: str = "gpt-4o"
+
+    # Gemini and GROQ keys for multi-provider category reasoning fallback.
+    GEMINI_API_KEY: str = Field(default="")
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GROQ_API_KEY: str = Field(default="")
+    GROQ_MODEL: str = "llama-3.1-70b-versatile"
 
     # Ollama local model endpoint and model name.
     # The base URL should point to the /api root (without a trailing path).

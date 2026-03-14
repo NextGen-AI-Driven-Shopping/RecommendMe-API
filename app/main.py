@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Handle application startup and graceful shutdown."""
     logger.info("Starting up RecommendMe API...")
+    if not hasattr(app.state, "session_store"):
+        app.state.session_store = {}
     yield
     logger.info("Shutting down RecommendMe API...")
 

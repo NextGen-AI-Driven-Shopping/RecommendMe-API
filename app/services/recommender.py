@@ -1,81 +1,94 @@
-"""
-Recommendation intent and category extraction service — Tier 2 AI.
+"""AI orchestration service for category and product reasoning."""
 
-Calls GPT-4o with the intent extraction prompt to parse a user query into
-a structured IntentResult containing:
-  - refined_query  : a cleaner version of the original query.
-  - categories     : 1–3 Google Shopping search phrases.
-  - attributes     : optional budget, brand, use-case, and feature hints.
+from __future__ import annotations
 
-TODO: Implementation pending from recommender service owner.
-      The function signature and return type are finalised.  Add the
-      OpenAI async client call and JSON parsing logic below.
-"""
-
-import json
-
-from app.core.config import get_settings
 from app.core.logger import get_logger
 from app.models.internal import IntentResult
-from app.prompts.intent_extraction import build_intent_prompt
+from app.providers import (
+    BaseCategoryProvider,
+    CategoryReasoningResult,
+    GeminiProvider,
+    GroqProvider,
+    OllamaProvider,
+    OpenAIProvider,
+    ProviderError,
+)
 
 logger = get_logger(__name__)
+
+
+class RecommendationServiceError(Exception):
+    """Raised when every provider in the fallback chain fails."""
+
+
+def _normalize_context(context: list | None) -> list[dict[str, str]]:
+    """Normalize context payload into chat messages for providers."""
+    if not context:
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in context:
+        if isinstance(item, dict):
+            role = item.get("role") or "user"
+            content = item.get("content") or ""
+        else:
+            role = getattr(item, "role", "user") or "user"
+            content = getattr(item, "content", "") or ""
+        if not isinstance(content, str) or not content.strip():
+            continue
+        normalized.append({"role": str(role), "content": content.strip()})
+    return normalized
+
+
+async def generate_category_plan(
+    query: str,
+    context: list | None = None,
+) -> CategoryReasoningResult:
+    """Generate category reasoning using provider fallback order."""
+    providers: list[BaseCategoryProvider] = [
+        GeminiProvider(),
+        GroqProvider(),
+        OpenAIProvider(),
+        OllamaProvider(),
+    ]
+    provider_context = _normalize_context(context)
+
+    errors: list[str] = []
+    for provider in providers:
+        try:
+            result = await provider.generate(query=query, context=provider_context)
+            logger.info(
+                "Category plan generated provider=%s categories=%d products=%d",
+                provider.provider_name,
+                len(result.categories),
+                len(result.recommended_products),
+            )
+            return result
+        except ProviderError as exc:
+            logger.warning("Provider failed provider=%s error=%s", provider.provider_name, exc)
+            errors.append(f"{provider.provider_name}: {exc}")
+            continue
+
+    raise RecommendationServiceError("All providers failed: " + " | ".join(errors))
 
 
 async def extract_intent(
     query: str,
     context: list | None = None,
 ) -> IntentResult | None:
-    """
-    Extract product intent and search categories from a user query.
-
-    Args:
-        query:   The clarified user query string.
-        context: Optional prior conversation messages in OpenAI message format
-                 for richer multi-turn context.
-
-    Returns:
-        IntentResult containing the refined query, category list, and any
-        extracted product attributes (budget, brand, etc.).
-        Returns None if the AI service is unavailable or not yet configured.
-
-    TODO: Implementation pending from recommender service owner.
-          Replace the placeholder below with the real OpenAI async call.
-    """
-    settings = get_settings()
-
-    if not settings.OPENAI_API_KEY:
-        # Temporary placeholder until the OpenAI key is configured in .env
-        logger.warning("OPENAI_API_KEY not set; extract_intent returning None.")
+    """Backward-compatible wrapper that maps category plan to IntentResult."""
+    try:
+        plan = await generate_category_plan(query=query, context=context)
+    except RecommendationServiceError as exc:
+        logger.error("extract_intent failed: %s", exc)
         return None
 
-    # TODO: Implementation pending from module owner.
-    #       1. Build the prompt using build_intent_prompt(query, context).
-    #       2. Call openai.AsyncOpenAI().chat.completions.create(...).
-    #       3. Parse the JSON response into IntentResult.
-    #
-    # Example skeleton (do not finalise until the service owner reviews):
-    #
-    #   try:
-    #       import openai
-    #       client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    #       messages = build_intent_prompt(query, context)
-    #       response = await client.chat.completions.create(
-    #           model="gpt-4o",
-    #           messages=messages,
-    #           temperature=0,
-    #       )
-    #       raw_json = response.choices[0].message.content
-    #       data = json.loads(raw_json)
-    #       return IntentResult(
-    #           original_query=query,
-    #           refined_query=data.get("refined_query", query),
-    #           categories=data.get("categories", [query]),
-    #           attributes=data.get("attributes"),
-    #       )
-    #   except Exception as exc:
-    #       logger.error(f"extract_intent failed: {exc!r}")
-    #       return None
-
-    # Temporary placeholder until feature implementation is completed.
-    return None
+    return IntentResult(
+        original_query=query,
+        refined_query=query,
+        categories=plan.categories,
+        attributes={
+            "reasoning": plan.reasoning,
+            "recommended_products": plan.recommended_products,
+        },
+    )

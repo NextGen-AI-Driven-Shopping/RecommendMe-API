@@ -51,6 +51,18 @@ def build_prompt(
     return PROMPT_TEMPLATE.format(user_context=user_context, products=formatted)
 
 
+def build_ranking_prompt(query: str, products: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Build chat-completion style messages for ranking providers.
+
+    This wrapper keeps backward compatibility with existing tests and callers
+    that expect a two-message prompt payload.
+    """
+    return [
+        {"role": "system", "content": "You are a product ranking assistant."},
+        {"role": "user", "content": build_prompt(products=products, user_context=query)},
+    ]
+
+
 # simple helper to parse the model output back into python objects
 
 def parse_response(output: str) -> List[Dict[str, Any]]:

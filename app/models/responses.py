@@ -4,9 +4,9 @@ Response models for the RecommendMe API.
 Defines the shape of every outbound JSON response served by the API.
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class ProductCard(BaseModel):
@@ -14,7 +14,7 @@ class ProductCard(BaseModel):
 
     title: str
     price: Optional[str] = None
-    url: str
+    url: HttpUrl
     image_url: Optional[str] = None
     source: Optional[str] = None
     rating: Optional[float] = None
@@ -31,7 +31,7 @@ class CategoryResult(BaseModel):
 class QueryResponse(BaseModel):
     """Response body for POST /v1/query."""
 
-    status: str = Field(
+    status: Literal["recommendations", "clarification_needed"] = Field(
         ...,
         description="'recommendations' or 'clarification_needed'",
     )
@@ -50,4 +50,6 @@ class HealthResponse(BaseModel):
     ollama: Optional[str] = None
     redis: Optional[str] = None
     openai: Optional[str] = None
+    gemini: Optional[str] = None
+    groq: Optional[str] = None
     serpapi: Optional[str] = None

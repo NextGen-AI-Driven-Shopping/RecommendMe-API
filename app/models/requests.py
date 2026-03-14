@@ -4,16 +4,23 @@ Request models for the RecommendMe API.
 Used to validate and parse all incoming HTTP request bodies.
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ConversationMessage(BaseModel):
     """A single message in a multi-turn conversation."""
 
-    role: str = Field(..., description="'user' or 'assistant'")
-    content: str = Field(..., description="Message content.")
+    role: Literal["user", "assistant"] = Field(..., description="'user' or 'assistant'")
+    content: str = Field(..., min_length=1, max_length=2000, description="Message content.")
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def strip_content(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 class QueryRequest(BaseModel):
@@ -33,5 +40,13 @@ class QueryRequest(BaseModel):
     # Full conversation history sent by the frontend for multi-turn context.
     conversation_history: Optional[List[ConversationMessage]] = Field(
         default_factory=list,
+        max_length=20,
         description="Prior conversation messages for multi-turn context.",
     )
+
+    @field_validator("user_message", mode="before")
+    @classmethod
+    def strip_user_message(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value

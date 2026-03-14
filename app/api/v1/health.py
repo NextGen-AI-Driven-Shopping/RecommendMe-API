@@ -1,10 +1,4 @@
-"""
-Health check route handler — GET /v1/health.
-
-Returns the current system status.  Each external dependency is probed
-lightly: a missing API key or unreachable service is reported without
-crashing the endpoint.
-"""
+"""Health check route handler for `GET /v1/health`."""
 
 from fastapi import APIRouter
 
@@ -22,15 +16,14 @@ async def health_check() -> HealthResponse:
     Probes whether each external service is configured.  Full liveness
     checks (actual HTTP pings) should be added here before production.
     """
-    print("\n" + "=" * 60)
-    print("[HEALTH ENDPOINT HIT]")
-
     settings = get_settings()
 
     # Shallow configuration check — does NOT make network requests.
     # Replace each block with a real probe once services are live.
-    openai_status  = "configured" if settings.OPENAI_API_KEY  else "not configured"
-    serpapi_status = "configured" if settings.SERPAPI_KEY     else "not configured"
+    openai_status = "configured" if settings.OPENAI_API_KEY else "not configured"
+    gemini_status = "configured" if settings.GEMINI_API_KEY else "not configured"
+    groq_status = "configured" if settings.GROQ_API_KEY else "not configured"
+    serpapi_status = "configured" if settings.SERPAPI_KEY else "not configured"
 
     # TODO: replace with a quick httpx GET to OLLAMA_URL/api/tags
     ollama_status = "configured" if settings.OLLAMA_URL else "not configured"
@@ -41,17 +34,11 @@ async def health_check() -> HealthResponse:
     response = HealthResponse(
         status="ok",
         openai=openai_status,
+        gemini=gemini_status,
+        groq=groq_status,
         serpapi=serpapi_status,
         ollama=ollama_status,
         redis=redis_status,
     )
-
-    print("[HEALTH] Status report:")
-    print(f"  overall = {response.status!r}")
-    print(f"  openai  = {response.openai!r}")
-    print(f"  ollama  = {response.ollama!r}")
-    print(f"  redis   = {response.redis!r}")
-    print(f"  serpapi = {response.serpapi!r}")
-    print("=" * 60 + "\n")
 
     return response

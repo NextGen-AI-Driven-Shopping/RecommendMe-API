@@ -1,13 +1,8 @@
-"""
-Product fetch service.
+"""Product fetch service backed by SerpAPI Google Shopping."""
 
-Queries the SerpAPI Google Shopping endpoint for products matching
-the extracted search categories and injects optional affiliate tracking
-tags into all returned product URLs.
+from __future__ import annotations
 
-TODO: Full SerpAPI HTTP integration pending from products service owner.
-      The function signatures and return types are finalised.
-"""
+import httpx
 
 from app.core.config import get_settings
 from app.core.logger import get_logger
@@ -27,48 +22,57 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
 
     Returns:
         List of ProductCard objects populated from SerpAPI results, or
-        None if the SerpAPI key is not configured / service not yet implemented.
-
-    TODO: Implementation pending from products service owner.
-          Replace the placeholder body below with the real SerpAPI HTTP call.
-
-    Example skeleton:
-        import httpx
-        settings = get_settings()
-        if not settings.SERPAPI_KEY:
-            return None
-        params = {
-            "engine": "google_shopping",
-            "q": f"{category} {query}".strip(),
-            "api_key": settings.SERPAPI_KEY,
-            "num": 10,
-        }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("https://serpapi.com/search", params=params)
-            resp.raise_for_status()
-            items = resp.json().get("shopping_results", [])
-        return [
-            ProductCard(
-                title=item.get("title", ""),
-                price=item.get("price"),
-                url=inject_affiliate_tag(item.get("link", "#"), settings.AFFILIATE_TAG),
-                image_url=item.get("thumbnail"),
-                source=item.get("source"),
-                rating=item.get("rating"),
-            )
-            for item in items
-        ]
+        None if the SerpAPI key is not configured or the provider fails.
     """
     settings = get_settings()
 
     if not settings.SERPAPI_KEY:
-        # Temporary placeholder until the SerpAPI key is configured in .env
-        logger.warning("SERPAPI_KEY not set; fetch_products returning None.")
+        logger.warning("SERPAPI_KEY not set; product fetch skipped")
         return None
 
-    # TODO: Implementation pending from module owner.
-    # Temporary placeholder until feature implementation is completed.
-    return None
+    params = {
+        "engine": "google_shopping",
+        "q": f"{category} {query}".strip(),
+        "api_key": settings.SERPAPI_KEY,
+        "num": 10,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get("https://serpapi.com/search", params=params)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("SerpAPI request failed category=%s error=%s", category, exc)
+        return None
+
+    items = response.json().get("shopping_results", [])
+    if not isinstance(items, list):
+        logger.warning("SerpAPI returned invalid shopping_results format")
+        return None
+
+    products: list[ProductCard] = []
+    for item in items:
+        title = str(item.get("title") or "").strip()
+        link = str(item.get("link") or "").strip()
+        if not title or not link:
+            continue
+
+        rating = item.get("rating")
+        rating_value = float(rating) if isinstance(rating, (int, float)) else None
+
+        products.append(
+            ProductCard(
+                title=title,
+                price=str(item.get("price") or "") or None,
+                url=inject_affiliate_tag(link, settings.AFFILIATE_TAG),
+                image_url=item.get("thumbnail"),
+                source=item.get("source"),
+                rating=rating_value,
+                explanation=None,
+            )
+        )
+
+    return products or None
 
 
 def inject_affiliate_tag(url: str, tag: str) -> str:
