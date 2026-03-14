@@ -44,3 +44,5 @@ Thumbs.db
 *.log
 
 LOGICAL_FLOW.md
+
+.env
