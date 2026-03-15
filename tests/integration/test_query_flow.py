@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import httpx
 
 from app.main import app
+from app.models.responses import ProductCard
+from app.providers.base import RecommendedProductInfo
 
 
 def _post(path: str, payload: dict) -> httpx.Response:
@@ -27,7 +29,7 @@ class _FakeVagueness:
 class _FakeCategoryPlan:
     categories: list[str]
     reasoning: str
-    recommended_products: list[str]
+    recommended_products: list[RecommendedProductInfo]
 
 
 def test_vague_query_returns_clarification(monkeypatch):
@@ -56,20 +58,25 @@ def test_clear_query_returns_recommendations(monkeypatch):
         return _FakeCategoryPlan(
             categories=["lightweight trekking backpack"],
             reasoning="Budget-friendly trekking setup.",
-            recommended_products=["Trekking Backpack 35L"],
+            recommended_products=[
+                RecommendedProductInfo(
+                    name="Trekking Backpack 35L",
+                    explanation="Perfect for day hikes",
+                    label="Recommended"
+                )
+            ],
         )
 
     async def _fake_fetch_products(category: str, query: str):
         return [
-            {
-                "title": "Pack A",
-                "price": "$89",
-                "url": "https://example.com/a",
-                "image_url": None,
-                "source": "Retailer",
-                "rating": 4.5,
-                "explanation": "Good value",
-            }
+            ProductCard(
+                title="Pack A",
+                price="$89",
+                url="https://example.com/a",
+                image_url=None,
+                source="Retailer",
+                rating=4.5,
+            )
         ]
 
     monkeypatch.setattr("app.api.v1.query.classify_vagueness", _fake_classify_vagueness)
@@ -99,7 +106,13 @@ def test_clear_query_uses_local_product_fallback_when_fetch_fails(monkeypatch):
         return _FakeCategoryPlan(
             categories=["camping stove"],
             reasoning="Cooking essentials for trekking.",
-            recommended_products=["Portable Camping Stove"],
+            recommended_products=[
+                RecommendedProductInfo(
+                    name="Portable Camping Stove",
+                    explanation="Lightweight and compact",
+                    label="Recommended"
+                )
+            ],
         )
 
     async def _fake_fetch_products(category: str, query: str):

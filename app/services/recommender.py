@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.core.logger import get_logger
 from app.models.internal import IntentResult
 from app.providers import (
@@ -19,6 +21,13 @@ logger = get_logger(__name__)
 
 class RecommendationServiceError(Exception):
     """Raised when every provider in the fallback chain fails."""
+
+
+def _redact_sensitive(text: str) -> str:
+    """Redact key-like query parameters and token fragments from log strings."""
+    redacted = re.sub(r"((?:api_)?key=)[^&\s]+", r"\1[REDACTED]", text, flags=re.IGNORECASE)
+    redacted = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "sk-[REDACTED]", redacted)
+    return redacted
 
 
 def _normalize_context(context: list | None) -> list[dict[str, str]]:
@@ -46,10 +55,10 @@ async def generate_category_plan(
 ) -> CategoryReasoningResult:
     """Generate category reasoning using provider fallback order."""
     providers: list[BaseCategoryProvider] = [
-        GeminiProvider(),
         GroqProvider(),
-        OpenAIProvider(),
         OllamaProvider(),
+        OpenAIProvider(),
+        GeminiProvider(),
     ]
     provider_context = _normalize_context(context)
 
@@ -65,11 +74,14 @@ async def generate_category_plan(
             )
             return result
         except ProviderError as exc:
-            logger.warning("Provider failed provider=%s error=%s", provider.provider_name, exc)
-            errors.append(f"{provider.provider_name}: {exc}")
+            error_text = _redact_sensitive(str(exc))
+            logger.warning("Provider failed provider=%s error=%s", provider.provider_name, error_text)
+            errors.append(f"{provider.provider_name}: {error_text}")
             continue
 
-    raise RecommendationServiceError("All providers failed: " + " | ".join(errors))
+    joined_errors = " | ".join(errors)
+    logger.error("All providers failed for category reasoning. errors=%s", joined_errors)
+    raise RecommendationServiceError("All category reasoning providers failed.")
 
 
 async def extract_intent(

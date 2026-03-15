@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 
 class ConversationMessage(BaseModel):
     """A single message in a multi-turn conversation."""
-
     role: Literal["user", "assistant"] = Field(..., description="'user' or 'assistant'")
     content: str = Field(..., min_length=1, max_length=2000, description="Message content.")
 
@@ -22,6 +21,10 @@ class ConversationMessage(BaseModel):
             return value.strip()
         return value
 
+class ClarificationAnswer(BaseModel):
+    """A single follow-up question and its answer."""
+    question: str
+    answer: str
 
 class QueryRequest(BaseModel):
     """Request body for POST /v1/query."""
@@ -42,6 +45,11 @@ class QueryRequest(BaseModel):
         default_factory=list,
         max_length=20,
         description="Prior conversation messages for multi-turn context.",
+    )
+    # Answers to clarification questions
+    clarification: Optional[List[ClarificationAnswer]] = Field(
+        default_factory=list,
+        description="List of clarification questions and user responses.",
     )
 
     @field_validator("user_message", mode="before")

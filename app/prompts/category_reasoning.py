@@ -9,11 +9,20 @@ Return only valid JSON with this exact schema:
 {
   "categories": ["string"],
   "reasoning": "string",
-  "recommended_products": ["string"]
+  "recommended_products": [
+    {
+      "name": "string",
+      "explanation": "string",
+      "label": "string"
+    }
+  ]
 }
 Rules:
 - categories must include 1 to 5 concise shopping categories.
-- recommended_products must include 3 to 8 specific product type names.
+- recommended_products must include 3 to 8 specific products. Each product needs:
+  - name: Specific product type name
+  - explanation: Short explanation of why it fits the user
+  - label: E.g., "Best Pick", "Runner Up", "AI Top Pick", or "Other"
 - reasoning must be concise and grounded in the query context.
 - Never include markdown, code fences, or extra keys.
 """

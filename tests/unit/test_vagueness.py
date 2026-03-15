@@ -7,11 +7,21 @@ from app.services.vagueness import classify_vagueness
 
 def test_classify_vagueness_returns_vague_with_followups(monkeypatch):
     class _FakeResponse:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"message": {"content": "VAGUE"}}
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"classification": "VAGUE", "follow_ups": ["What is your budget?", "What features do you need?", "Any brand preferences?"]}'
+                        }
+                    }
+                ]
+            }
 
     class _FakeClient:
         def __init__(self, *args, **kwargs):

@@ -20,20 +20,34 @@ class ProviderResponseError(ProviderError):
     """Raised when provider output cannot be validated."""
 
 
+class RecommendedProductInfo(BaseModel):
+    """Detailed info for a recommended product."""
+    name: str
+    explanation: str
+    label: str
+
+
 class CategoryReasoningResult(BaseModel):
     """Normalized category reasoning result used by all providers."""
 
     categories: list[str]
     reasoning: str
-    recommended_products: list[str]
+    recommended_products: list[RecommendedProductInfo]
 
-    @field_validator("categories", "recommended_products")
+    @field_validator("categories")
     @classmethod
     def _validate_non_empty_list(cls, value: list[str]) -> list[str]:
         filtered = [item.strip() for item in value if item and item.strip()]
         if not filtered:
             raise ValueError("list must contain at least one non-empty value")
         return filtered
+
+    @field_validator("recommended_products")
+    @classmethod
+    def _validate_non_empty_products(cls, value: list[RecommendedProductInfo]) -> list[RecommendedProductInfo]:
+        if not value:
+            raise ValueError("list must contain at least one recommended product")
+        return value
 
     @field_validator("reasoning")
     @classmethod
@@ -55,7 +69,7 @@ class BaseCategoryProvider(ABC):
         *,
         query: str,
         context: list[dict[str, str]] | None = None,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 8.0,
     ) -> CategoryReasoningResult:
         """Generate categories, reasoning, and recommended product names."""
 

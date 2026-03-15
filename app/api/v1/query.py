@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from urllib.parse import quote_plus
 
 from fastapi import APIRouter
 
@@ -14,7 +13,7 @@ from app.models.requests import QueryRequest
 from app.models.responses import CategoryResult, ProductCard, QueryResponse
 from app.services.products import fetch_products
 from app.services.recommender import RecommendationServiceError, generate_category_plan
-from app.services.vagueness import VaguenessServiceError, classify_vagueness
+from app.services.vagueness import VaguenessResult, VaguenessServiceError, classify_vagueness
 from app.utils.formatters import build_clarification_response, build_recommendation_response
 from app.utils.session import set_session
 from app.utils.validators import is_valid_query
@@ -31,21 +30,6 @@ def _build_fallback_questions(query: str) -> list[str]:
         "Which brand or quality level do you prefer?",
         "What is your primary use case and timeline for this purchase?",
     ]
-
-
-def _build_local_products(recommended_products: list[str], query: str) -> list[ProductCard]:
-    """Build lightweight product cards from model-recommended product names."""
-    cards: list[ProductCard] = []
-    for name in recommended_products[:6]:
-        search_url = f"https://www.google.com/search?q={quote_plus(f'{name} {query}'.strip())}"
-        cards.append(
-            ProductCard(
-                title=name,
-                url=search_url,
-                explanation="Suggested by AI reasoning pipeline. Live listings unavailable.",
-            )
-        )
-    return cards
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -68,17 +52,25 @@ async def handle_query(
         len(conversation),
     )
 
-    # Step 1: Vagueness detection via Ollama (with internal fallback in service).
-    try:
-        vagueness_result = await classify_vagueness(clean_query, allow_fallback=True)
-    except VaguenessServiceError as exc:
-        logger.error("Vagueness classification failed session_id=%s error=%s", session_id, exc)
-        raise AIServiceException(detail="All AI providers failed for vagueness classification.") from exc
+    # Step 1: Vagueness detection via providers
+    if payload.clarification:
+        vagueness_result = VaguenessResult(classification="CLEAR")
+        clarification_text = "\n".join(
+            f"Q: {c.question}\nA: {c.answer}" for c in payload.clarification
+        )
+        clean_query = f"{clean_query}\n\nUser Context:\n{clarification_text}"
+        logger.info("Bypassing vagueness check due to provided clarifications.")
+    else:
+        try:
+            vagueness_result = await classify_vagueness(clean_query, allow_fallback=True)
+        except VaguenessServiceError as exc:
+            logger.error("Vagueness classification failed session_id=%s error=%s", session_id, exc)
+            raise AIServiceException(detail="All AI providers failed for vagueness classification.") from exc
 
     if vagueness_result.classification == "VAGUE":
         follow_ups = vagueness_result.follow_ups or _build_fallback_questions(clean_query)
         response = build_clarification_response(
-            follow_up=" ".join(follow_ups[:3]),
+            message_or_follow_ups=follow_ups[:3],
             session_id=session_id,
         )
         set_session(
@@ -100,19 +92,46 @@ async def handle_query(
         raise AIServiceException(detail="All AI providers failed for category reasoning.") from exc
 
     category_results: list[CategoryResult] = []
-    for category in category_plan.categories:
-        fetched = await fetch_products(category=category, query=clean_query)
-        if fetched:
-            category_results.append(CategoryResult(category=category, products=fetched[:3]))
-        else:
-            category_results.append(
-                CategoryResult(
-                    category=category,
-                    products=_build_local_products(category_plan.recommended_products, clean_query),
-                )
-            )
+    main_category = category_plan.categories[0] if category_plan.categories else "Recommended Products"
+    logger.info("AI recommended %d products for category=%s", len(category_plan.recommended_products), main_category)
+    product_cards: list[ProductCard] = []
 
-    response = build_recommendation_response(categories=category_results, session_id=session_id)
+    for product_info in category_plan.recommended_products:
+        fetched = await fetch_products(category="", query=product_info.name)
+        if fetched:
+            card = fetched[0]
+            card.explanation = product_info.explanation
+            card.label = product_info.label
+            product_cards.append(card)
+        else:
+            logger.warning(
+                "No live products for product=%s session_id=%s — using fallback",
+                product_info.name,
+                session_id,
+            )
+            # Create a Google search fallback
+            fallback_card = ProductCard(
+                title=product_info.name,
+                url=f"https://www.google.com/search?q={product_info.name.replace(' ', '+')}",
+                explanation="Live listings unavailable. Search Google for alternatives.",
+                label=product_info.label,
+            )
+            product_cards.append(fallback_card)
+
+    if product_cards:
+        category_results.append(CategoryResult(category=main_category, products=product_cards))
+
+    if not category_results:
+        raise AIServiceException(
+            detail="No live product listings could be fetched from SerpAPI. "
+                   "Please verify your SERPAPI_KEY or try again later."
+        )
+
+    response = build_recommendation_response(
+        categories=category_results,
+        session_id=session_id,
+        summary=category_plan.reasoning,
+    )
     set_session(
         session_id,
         {
@@ -120,7 +139,7 @@ async def handle_query(
             "query": clean_query,
             "categories": category_plan.categories,
             "reasoning": category_plan.reasoning,
-            "recommended_products": category_plan.recommended_products,
+            "recommended_products": [p.name for p in category_plan.recommended_products],
         },
     )
 

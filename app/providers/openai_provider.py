@@ -28,7 +28,7 @@ class OpenAIProvider(BaseCategoryProvider):
         *,
         query: str,
         context: list[dict[str, str]] | None = None,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 8.0,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         if not settings.OPENAI_API_KEY:

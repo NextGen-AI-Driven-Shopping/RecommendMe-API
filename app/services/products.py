@@ -27,7 +27,7 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
     settings = get_settings()
 
     if not settings.SERPAPI_KEY:
-        logger.warning("SERPAPI_KEY not set; product fetch skipped")
+        logger.warning("SERPAPI_KEY not set; product fetch skipped for query=%s", query)
         return None
 
     params = {
@@ -40,34 +40,61 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.get("https://serpapi.com/search", params=params)
-            response.raise_for_status()
+
+        if response.status_code in (401, 403):
+            logger.error(
+                "SerpAPI authentication failed category=%s — verify SERPAPI_KEY. Response: %s",
+                category,
+                response.text[:300],
+            )
+            return None
+
+        response.raise_for_status()
     except httpx.HTTPError as exc:
-        logger.error("SerpAPI request failed category=%s error=%s", category, exc)
+        status_code = getattr(getattr(exc, "response", None), "status_code", "unknown")
+        body = ""
+        if hasattr(exc, "response") and exc.response is not None:
+            try:
+                body = exc.response.text[:300]
+            except Exception:
+                pass
+        logger.error("SerpAPI request failed category=%s status=%s body=%s", category, status_code, body)
         return None
 
-    items = response.json().get("shopping_results", [])
+    data = response.json()
+    items = data.get("shopping_results", [])
     if not isinstance(items, list):
-        logger.warning("SerpAPI returned invalid shopping_results format")
+        logger.warning("SerpAPI returned invalid shopping_results format: %s", str(data)[:200])
         return None
 
     products: list[ProductCard] = []
     for item in items:
         title = str(item.get("title") or "").strip()
-        link = str(item.get("link") or "").strip()
+        # Prefer direct product URL; fall back to Google Shopping listing link.
+        link = (
+            str(item.get("product_link") or item.get("link") or "").strip()
+        )
         if not title or not link:
             continue
 
-        rating = item.get("rating")
-        rating_value = float(rating) if isinstance(rating, (int, float)) else None
+        rating_raw = item.get("rating")
+        rating_value = float(rating_raw) if isinstance(rating_raw, (int, float)) else None
+
+        reviews_raw = item.get("reviews")
+        reviews_value = int(reviews_raw) if isinstance(reviews_raw, (int, float)) else None
+
+        price_raw = item.get("price")
+        price_str = str(price_raw).strip() if price_raw is not None else None
 
         products.append(
             ProductCard(
                 title=title,
-                price=str(item.get("price") or "") or None,
+                price=price_str or None,
                 url=inject_affiliate_tag(link, settings.AFFILIATE_TAG),
-                image_url=item.get("thumbnail"),
-                source=item.get("source"),
+                image_url=item.get("thumbnail") or None,
+                source=item.get("source") or None,
                 rating=rating_value,
+                reviews=reviews_value,
                 explanation=None,
             )
         )

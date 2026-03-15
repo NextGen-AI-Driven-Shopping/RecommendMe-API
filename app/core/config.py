@@ -32,9 +32,13 @@ class Settings(BaseSettings):
 
     # Gemini and GROQ keys for multi-provider category reasoning fallback.
     GEMINI_API_KEY: str = Field(default="")
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-2.0-flash"
     GROQ_API_KEY: str = Field(default="")
-    GROQ_MODEL: str = "llama-3.1-70b-versatile"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    
+    # Additional AI and third-party APIs
+    GROK_API_KEY: str = Field(default="")
+    OTHER_API_KEY: str = Field(default="")
 
     # Ollama local model endpoint and model name.
     # The base URL should point to the /api root (without a trailing path).
@@ -51,7 +55,15 @@ class Settings(BaseSettings):
     # 4. Infrastructure & security
     # ------------------------------------------------------------------ #
     # Comma-separated list of allowed frontend origins for CORS.
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ]
+    # Optional regex for local development origins (e.g. [::1], custom Vite ports).
+    CORS_ORIGIN_REGEX: str = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
     # Global per-IP rate limit enforced by the rate-limiter dependency.
     RATE_LIMIT_PER_MINUTE: int = 10
