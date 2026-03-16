@@ -42,7 +42,8 @@ class Settings(BaseSettings):
 
     # Ollama local model endpoint and model name.
     # The base URL should point to the /api root (without a trailing path).
-    OLLAMA_URL: str = "http://localhost:11434"
+    # Set OLLAMA_URL env var to enable; defaults to empty (disabled).
+    OLLAMA_URL: str = Field(default="")
     OLLAMA_MODEL: str = "phi3"
 
     # ------------------------------------------------------------------ #
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
     # 4. Infrastructure & security
     # ------------------------------------------------------------------ #
     # Comma-separated list of allowed frontend origins for CORS.
+    # Production MUST set this explicitly via env var or it defaults to localhost.
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
@@ -71,8 +73,9 @@ class Settings(BaseSettings):
     # In-memory session TTL (minutes).  Redis TTL is derived from this value.
     SESSION_TTL_MINUTES: int = 30
 
-    # Redis connection URL for the optional caching layer.
-    REDIS_URL: str = "redis://localhost:6379"
+    # Redis connection URL for optional caching layer.
+    # If empty, in-memory cache is used (not recommended for multi-instance).
+    REDIS_URL: str = Field(default="")
 
     # ------------------------------------------------------------------ #
     # 5. Optional monetisation
