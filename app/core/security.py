@@ -2,38 +2,26 @@
 Security configuration.
 
 Covers:
-  - CORS policy (allowed origins, methods, headers).
+  - CORS policy (using settings for production flexibility).
   - Basic input sanitization helper.
-  - Rate limit rule constants used by the rate limiter.
-
-Full injection detection lives in app/utils/validators.py.
+  - Rate limit rule constants.
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-ALLOWED_ORIGINS: list[str] = [
-    "http://localhost:3000",
-    "http://localhost:8000",
-]
-
+from app.core.config import settings  # Import our central settings
 
 def configure_cors(app: FastAPI) -> None:
-    """Add CORS middleware with the configured allowed origins."""
+    """Add CORS middleware with origins defined in config.py."""
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS,
+        # Use settings.CORS_ORIGINS instead of a hardcoded list
+        allow_origins=settings.CORS_ORIGINS, 
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-
 def sanitize_input(text: str) -> str:
-    """
-    Strip leading/trailing whitespace and remove null bytes.
-
-    Full prompt-injection and HTML-injection checks are handled
-    in app/utils/validators.py before this function is called.
-    """
+    """Strip leading/trailing whitespace and remove null bytes."""
     return text.strip().replace("\x00", "")
