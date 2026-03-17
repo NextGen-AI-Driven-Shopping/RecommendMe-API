@@ -18,7 +18,14 @@ class Settings(BaseSettings):
 
     # 4. Infrastructure & Security
     # Whitelisted origins for CORS (the frontend URLs)
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    # Inside your Settings class in config.py
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "https://recommendme-app-production-ui.up.railway.app"
+    ]
+    
+    # Add this for your security task while you are at it:
+    API_KEY: str = "dev-secret-key"
     
     # Global Rate Limit (Requirement: 10 requests/minute)
     RATE_LIMIT_PER_MINUTE: int = 10
