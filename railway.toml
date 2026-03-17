@@ -5,4 +5,4 @@ builder = "dockerfile"
 # Ensure the shell expands $PORT at runtime
 startCommand = "sh -c 'uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/v1/health"
-healthcheckTimeout = 100
+healthcheckTimeout = 120
