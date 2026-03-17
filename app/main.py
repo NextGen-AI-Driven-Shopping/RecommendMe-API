@@ -54,7 +54,7 @@ async def root():
             "status": "✅ Server is running",
             "version": "1.0.0",
             "documentation": "/docs",
-            "health_check": "/v1/health",
+            "health_check": "/health",
         },
     )
 
