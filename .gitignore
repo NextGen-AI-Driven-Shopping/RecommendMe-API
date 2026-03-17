@@ -42,3 +42,7 @@ Thumbs.db
 
 # Docker
 *.log
+
+LOGICAL_FLOW.md
+
+.env

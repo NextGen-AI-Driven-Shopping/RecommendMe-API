@@ -1,522 +1,233 @@
-# RecommendMe — Backend API
+# RecommendMe API
 
-The Python FastAPI backend for [RecommendMe](https://github.com/NextGen-AI-Driven-Shopping/recommendme) — a conversational AI product discovery engine.
+FastAPI backend for AI-powered product recommendations with a provider-resilient reasoning pipeline.
 
-> Handles everything the user never sees: query understanding, AI orchestration, product fetching, and response assembly.
+## Project Overview
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-green)
-![License](https://img.shields.io/badge/License-MIT-purple)
+RecommendMe API receives a user shopping query, determines whether it is actionable, and either:
 
----
+- returns follow-up clarification prompts, or
+- returns category-based product recommendations.
 
-## What This Repo Does
-
-This is the brain of RecommendMe. Every user message flows through here. Responsibilities:
-
-- **Query classification** — determines if the user's request has enough context to generate recommendations (Tier 1 AI via Ollama)
-- **Follow-up generation** — if the query is vague, generates 2–3 targeted clarifying questions
-- **Intent extraction** — once context is clear, identifies every product category the user needs (Tier 2 AI via GPT-4o)
-- **Product fetching** — calls SerpAPI Google Shopping for real product listings
-- **Ranking and explanation** — uses GPT-4o to rank the top 3 products per category with personalized reasons
-- **Response assembly** — packages everything into a clean, structured JSON response for the frontend
-
-The frontend (`recommendme-ui`) only talks to one endpoint: `POST /v1/query`. Everything else is internal.
-
----
+The backend is designed for frontend apps and service consumers that need structured output and stable behavior even when individual AI providers fail.
 
 ## Architecture
 
-```
-Incoming Request (POST /v1/query)
-            │
-            ▼
-┌───────────────────────┐
-│   FastAPI Route       │  app/api/v1/query.py
-│   Validate input      │  ← Pydantic schema check
-│   Resolve session ID  │  ← app/utils/session.py
-└──────────┬────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│   Vagueness Service   │  app/services/vagueness.py
-│   Tier 1 AI — Ollama  │  ← Phi-3 Mini (local)
-│   Is query CLEAR?     │  ← Falls back to GPT-4o-mini
-└──────────┬────────────┘
-           │
-     VAGUE │ CLEAR
-     ┌─────┘  └──────────────────────────┐
-     ▼                                   ▼
-Return follow-up              ┌───────────────────────┐
-questions to frontend         │  Recommender Service  │  app/services/recommender.py
-                              │  Tier 2 AI — GPT-4o   │
-                              │  Extract intent        │
-                              │  Generate categories   │
-                              └──────────┬────────────┘
-                                         │
-                                         ▼
-                              ┌───────────────────────┐
-                              │  Product Service      │  app/services/products.py
-                              │  SerpAPI fetch        │  ← Per category
-                              │  Cache check first    │  ← app/services/cache.py
-                              └──────────┬────────────┘
-                                         │
-                                         ▼
-                              ┌───────────────────────┐
-                              │  Ranking Service      │  app/services/ranking.py
-                              │  GPT-4o ranks top 3   │
-                              │  Writes reasons       │
-                              └──────────┬────────────┘
-                                         │
-                                         ▼
-                              ┌───────────────────────┐
-                              │  Response Assembly    │  app/utils/formatters.py
-                              │  Structured JSON      │
-                              │  Returned to frontend │
-                              └───────────────────────┘
-```
+Core layers:
 
----
+- API routes: input parsing, response contracts, orchestration entrypoint.
+- Services: vagueness detection, category reasoning, product fetch.
+- Providers: Gemini, GROQ, OpenAI, Ollama via a shared abstraction.
+- Prompts: isolated prompt templates for each AI decision step.
+- Models: request/response and internal data contracts.
+- Core: config, exceptions, middleware, logging, security.
 
-## Two-Tier AI Design
+## API Flow
 
-| | Tier 1 | Tier 2 |
-|---|---|---|
-| **Model** | Ollama — Phi-3 Mini | OpenAI GPT-4o |
-| **Runs on** | Local server | OpenAI Cloud API |
-| **Job** | Classify query as CLEAR or VAGUE. Generate follow-up questions if vague. | Extract intent. Generate product categories. Rank and explain top products. |
-| **Cost** | Free | ~$0.01–$0.03 per session |
-| **Speed** | < 1.5s | < 4s |
-| **Fallback** | GPT-4o-mini if Ollama unavailable | — |
+`POST /v1/query` lifecycle:
 
----
+1. Validate and sanitize input.
+2. Run vagueness detection (Ollama first, with service-level fallback).
+3. If vague: return clarification prompt.
+4. If clear: run category/product reasoning through provider fallback chain.
+5. Enrich categories with SerpAPI listings when available.
+6. Return structured recommendations response.
 
-## Project Structure
+## AI Provider Stack
 
-```
-recommendme-api/
-│
-├── app/                                    ← Main application package
-│   ├── __init__.py
-│   ├── main.py                             ← FastAPI app, lifespan, middleware registration
-│   │
-│   ├── api/                                ← All route handlers
-│   │   ├── __init__.py
-│   │   ├── deps.py                         ← Shared dependencies (session, rate limiter injection)
-│   │   └── v1/
-│   │       ├── __init__.py
-│   │       ├── router.py                   ← Aggregates all v1 routes into one router
-│   │       ├── query.py                    ← POST /v1/query  (core endpoint)
-│   │       └── health.py                   ← GET /v1/health  (system status)
-│   │
-│   ├── services/                           ← Business logic — one job per file
-│   │   ├── __init__.py
-│   │   ├── vagueness.py                    ← Tier 1 AI: Ollama check + GPT-4o-mini fallback
-│   │   ├── recommender.py                  ← Tier 2 AI: GPT-4o intent + category generation
-│   │   ├── products.py                     ← SerpAPI fetch + affiliate tag injection
-│   │   ├── ranking.py                      ← GPT-4o product ranking + explanation generation
-│   │   └── cache.py                        ← Redis get/set for product query results
-│   │
-│   ├── models/                             ← All Pydantic models, split by purpose
-│   │   ├── __init__.py
-│   │   ├── requests.py                     ← QueryRequest, ConversationMessage
-│   │   ├── responses.py                    ← QueryResponse, ProductCard, CategoryResult
-│   │   └── internal.py                     ← Internal types not exposed to API consumers
-│   │
-│   ├── prompts/                            ← AI prompt templates, versioned and isolated
-│   │   ├── __init__.py
-│   │   ├── vagueness_check.py              ← Tier 1 prompt: CLEAR / VAGUE classification
-│   │   ├── intent_extraction.py            ← Tier 2 prompt: extract categories from context
-│   │   └── product_ranking.py              ← Tier 2 prompt: rank products + write reasons
-│   │
-│   ├── core/                               ← App config, exceptions, cross-cutting concerns
-│   │   ├── __init__.py
-│   │   ├── config.py                       ← All settings loaded from .env via Pydantic BaseSettings
-│   │   ├── exceptions.py                   ← Custom exception classes + HTTP error handlers
-│   │   ├── logger.py                       ← Structured JSON logging setup
-│   │   ├── middleware.py                   ← Request logging, timing, correlation ID middleware
-│   │   └── security.py                     ← Input sanitization, CORS config, rate limit rules
-│   │
-│   └── utils/                              ← Stateless helper functions
-│       ├── __init__.py
-│       ├── session.py                      ← In-memory session store (dict keyed by session_id)
-│       ├── validators.py                   ← Query length checks, injection pattern detection
-│       └── formatters.py                   ← Response assembly, affiliate URL tagging
-│
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py                         ← Shared pytest fixtures, mock clients, test app setup
-│   ├── unit/
-│   │   ├── __init__.py
-│   │   ├── test_vagueness.py
-│   │   ├── test_recommender.py
-│   │   ├── test_products.py
-│   │   ├── test_ranking.py
-│   │   ├── test_prompts.py
-│   │   ├── test_validators.py
-│   │   └── test_formatters.py
-│   └── integration/
-│       ├── __init__.py
-│       ├── test_query_flow.py              ← Full flow: vague → follow-up → recommendations
-│       └── test_health.py
-│
-├── scripts/                                ← Developer utilities, not part of the app
-│   ├── test_prompt.py                      ← Run a prompt against GPT-4o from terminal
-│   ├── mock_serp.py                        ← Generate mock SerpAPI responses for offline dev
-│   └── check_ollama.py                     ← Verify Ollama is running and model is loaded
-│
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                          ← Run tests + lint on every PR
-│       └── deploy.yml                      ← Auto-deploy to Railway on merge to main
-│
-├── main.py                                 ← Entry point: imports and runs app from app/
-├── requirements.txt                        ← Production dependencies
-├── requirements-dev.txt                    ← Dev + test dependencies
-├── .env.example                            ← All env vars documented with placeholder values
-├── .gitignore
-├── Dockerfile                              ← Production container
-├── docker-compose.yml                      ← Local dev: app + Redis together
-└── README.md
-```
+Vagueness detection:
 
----
+- Ollama (primary)
+- OpenAI mini model (internal fallback in vagueness service)
 
-## API Reference
+Category and product reasoning fallback order:
 
-### Base URL
+1. Gemini
+2. GROQ
+3. OpenAI
+4. Ollama (final fallback)
 
-```
-Production:   https://api.recommendme.in/v1
-Development:  http://localhost:8000/v1
-```
+Fallback triggers on:
 
----
+- API request errors
+- timeout
+- unavailable/misconfigured provider
+- invalid response schema
 
-### `POST /v1/query`
+## Main Endpoint
 
-The primary endpoint. Accepts a user message and conversation history. Returns either follow-up questions or final product recommendations.
+`POST /v1/query`
 
-**Request**
+Request example:
 
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "user_message": "I want to go trekking",
+  "user_message": "I need lightweight trekking gear under 150 dollars",
   "conversation_history": [
-    { "role": "user", "content": "I want to go trekking" }
+    { "role": "user", "content": "I need trekking gear" }
   ]
 }
 ```
 
-**Response A — Query is vague**
+Response example (clarification):
 
 ```json
 {
-  "type": "followup",
-  "questions": [
-    "Where are you trekking and for how many days?",
-    "Will you be camping or staying in hotels?",
-    "What is your approximate budget?"
-  ]
+  "status": "clarification_needed",
+  "message": "What budget range should I target?",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-**Response B — Context is clear**
+Response example (recommendations):
 
 ```json
 {
-  "type": "recommendations",
-  "summary": "Gear for a 3-day Himalayan camping trek under ₹15,000.",
+  "status": "recommendations",
   "categories": [
     {
-      "name": "Tent",
-      "why_needed": "Essential for camping in open terrain.",
-      "budget_allocation": "₹3,000 – ₹6,000",
+      "category": "lightweight trekking backpack",
       "products": [
         {
-          "title": "Quechua 2-Person Tent MH100",
-          "price": "₹3,499",
-          "rating": 4.5,
-          "reviews": "2,140",
-          "source": "Decathlon",
-          "link": "https://decathlon.in/...",
-          "thumbnail": "https://...",
-          "reason": "Best weight-to-price ratio for Himalayan conditions."
+          "title": "Trekking Backpack 35L",
+          "price": "$89",
+          "url": "https://example.com/product/123",
+          "image_url": "https://example.com/image.jpg",
+          "source": "Retailer",
+          "rating": 4.6,
+          "explanation": "Good weight-capacity tradeoff for short treks."
         }
-      ],
-      "expert_tip": "Look for a double-wall tent for better rain protection."
+      ]
     }
-  ]
+  ],
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
----
+## Setup
 
-### `GET /v1/health`
-
-Returns system health including AI service availability.
-
-**Response**
-
-```json
-{
-  "status": "ok",
-  "ollama": "available",
-  "openai": "connected",
-  "serpapi": "configured"
-}
-```
-
----
-
-## Error Responses
-
-All errors return a consistent structure:
-
-```json
-{
-  "error": true,
-  "code": "OPENAI_RATE_LIMIT",
-  "message": "Our AI is momentarily busy. Please try again in a few seconds.",
-  "retry_after": 5
-}
-```
-
-| Error Code | Trigger | HTTP Status |
-|------------|---------|-------------|
-| `QUERY_TOO_SHORT` | Query under 3 words | 400 |
-| `OLLAMA_UNAVAILABLE` | Ollama not running | Silent fallback |
-| `OPENAI_RATE_LIMIT` | 429 from OpenAI | 429 |
-| `SERP_NO_RESULTS` | Empty SerpAPI results | 200 (partial) |
-| `SERP_QUOTA_EXCEEDED` | SerpAPI limit reached | 503 |
-| `SESSION_EXPIRED` | Inactive > 30 min | 401 |
-| `INTERNAL_ERROR` | Unhandled exception | 500 |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.11+
-- pip
-- Ollama installed locally (optional but recommended)
-- OpenAI API key
-- SerpAPI key (optional — mock data used without it)
-
-### 1. Clone and Install
+1. Install dependencies.
+2. Configure `.env`.
+3. Start the API.
 
 ```bash
-git clone https://github.com/NextGen-AI-Driven-Shopping/recommendme-api.git
-cd recommendme-api
-
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
 pip install -r requirements.txt
-pip install -r requirements-dev.txt    # for testing + linting
+uvicorn app.main:app --reload
 ```
 
-### 2. Environment Variables
+## Environment Variables
+
+Required or commonly used:
+
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `GROQ_API_KEY`
+- `OLLAMA_URL`
+- `OLLAMA_MODEL`
+- `SERPAPI_KEY`
+- `REDIS_URL`
+- `CORS_ORIGINS`
+- `RATE_LIMIT_PER_MINUTE`
+- `SESSION_TTL_MINUTES`
+
+Model overrides:
+
+- `OPENAI_MODEL` (default: `gpt-4o`)
+- `GEMINI_MODEL` (default: `gemini-1.5-flash`)
+- `GROQ_MODEL` (default: `llama-3.1-70b-versatile`)
+
+## Running the Server
 
 ```bash
-cp .env.example .env
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open `.env` and fill in:
-
-```env
-# Required
-OPENAI_API_KEY=sk-...
-
-# Optional — mock data used if not set
-SERPAPI_KEY=...
-
-# Optional — fallback to GPT-4o-mini if Ollama not running
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=phi3
-
-# App config
-APP_ENV=development
-RATE_LIMIT_PER_MINUTE=10
-SESSION_TTL_MINUTES=30
-```
-
-### 3. Set Up Ollama (Optional)
+Health check:
 
 ```bash
-# Install from https://ollama.com then run:
-ollama pull phi3
+curl http://localhost:8000/v1/health
 ```
 
-Ollama runs at `http://localhost:11434`. If it's not running, the app silently falls back to GPT-4o-mini — nothing breaks.
+## Project Structure
 
-### 4. Run with Docker (Recommended)
-
-```bash
-docker-compose up --build
+```text
+RecommendMe-API/
+|-- app/
+|   |-- api/
+|   |   |-- v1/
+|   |   |   |-- health.py
+|   |   |   `-- query.py
+|   |   |-- deps.py
+|   |   `-- README.md
+|   |-- core/
+|   |   |-- config.py
+|   |   |-- exceptions.py
+|   |   |-- logger.py
+|   |   |-- middleware.py
+|   |   `-- security.py
+|   |-- models/
+|   |   |-- internal.py
+|   |   |-- requests.py
+|   |   `-- responses.py
+|   |-- prompts/
+|   |   |-- category_reasoning.py
+|   |   |-- intent_extraction.py
+|   |   |-- product_ranking.py
+|   |   `-- vagueness_check.py
+|   |-- providers/
+|   |   |-- base.py
+|   |   |-- gemini_provider.py
+|   |   |-- groq_provider.py
+|   |   |-- openai_provider.py
+|   |   `-- ollama_provider.py
+|   |-- services/
+|   |   |-- cache.py
+|   |   |-- products.py
+|   |   |-- ranking.py
+|   |   |-- recommender.py
+|   |   `-- vagueness.py
+|   |-- utils/
+|   |   |-- formatters.py
+|   |   |-- session.py
+|   |   `-- validators.py
+|   `-- main.py
+|-- docs/
+|   |-- api_architecture.md
+|   |-- ai_model_pipeline.md
+|   `-- project_structure.md
+|-- Dockerfile
+|-- docker-compose.yml
+|-- main.py
+|-- requirements.txt
+`-- README.md
 ```
 
-Starts the FastAPI backend and Redis together. No manual Redis setup needed.
+## Additional Documentation
 
-### 5. Run without Docker
+- `app/api/README.md`
+- `docs/api_architecture.md`
+- `docs/ai_model_pipeline.md`
+- `docs/project_structure.md`
 
-```bash
-uvicorn main:app --reload
-```
+## Environment file (.env) — format
 
-Server at `http://localhost:8000`
+This project reads local environment variables from a `.env` file for development. This file often contains sensitive API keys and must NOT be committed to the repository. Add `.env` to your global or repository `.gitignore`.
 
-API docs:
-- Swagger UI → `http://localhost:8000/docs`
-- ReDoc → `http://localhost:8000/redoc`
-
----
-
-## Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# With coverage report
-pytest --cov=app --cov-report=term-missing
-
-# Unit tests only
-pytest tests/unit/ -v
-
-# Integration tests only
-pytest tests/integration/ -v
-
-# Specific file
-pytest tests/unit/test_vagueness.py -v
-```
-
----
-
-## Linting
-
-```bash
-# Check for issues
-ruff check .
-
-# Auto-fix where possible
-ruff check . --fix
-```
-
----
-
-## Security
-
-- All API keys loaded from environment variables — never hardcoded
-- `.env` is in `.gitignore` — never committed
-- User input validated and sanitized before passing to any AI model
-- Conversation history capped at 20 messages per session (prompt injection protection)
-- Rate limiting via `slowapi` — 10 requests/minute per IP on `POST /v1/query`
-- CORS restricted to whitelisted frontend origin in production
-- HTTPS enforced in production
-
----
-
-## Deployment
-
-### Deploy to Railway
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-```
-
-Set all environment variables in the Railway dashboard under **Variables**.
-
-### Deploy to Render
-
-Connect your GitHub repo to Render and set the start command to:
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
-
-Add all environment variables under **Environment** in the Render dashboard.
-
-> **Note:** Ollama cannot run on free-tier Railway or Render instances due to RAM constraints. The app automatically falls back to GPT-4o-mini in production — no action needed.
-
----
-
-## Key Design Decisions
-
-**`app/` package over root-level structure.** All application code lives inside `app/` to create a clean boundary between the running application, tests, and scripts. Avoids import collisions, simplifies the Dockerfile, and makes team ownership boundaries obvious.
-
-**Stateless backend.** No database in MVP. Session state lives in-memory as a Python dictionary keyed by `session_id`. Keeps deployment simple and enables horizontal scaling. A database becomes relevant in v2 when user accounts and history are added.
-
-**Prompts are code, not strings.** All AI prompts live in `app/prompts/` as structured Python files, not scattered inline strings. Independently testable, versionable, and improvable without touching service logic.
-
-**Ranking is its own service.** `ranking.py` is split from `products.py` deliberately. Fetching is I/O bound (SerpAPI network call), ranking is AI bound (GPT-4o). Separating them makes each independently testable and swappable without touching the other.
-
-**Ollama is optional by design.** The two-tier AI setup saves money at scale, but Ollama requires RAM that free hosting tiers don't provide. The fallback to GPT-4o-mini ensures the app runs identically in all environments.
-
-**One endpoint.** The entire conversation flow runs through `POST /v1/query`. The `type` field in the response (`followup` or `recommendations`) tells the frontend what to render. Keeps the API contract minimal and frontend logic clean.
-
----
-
-## Dependencies
-
-**Production** (`requirements.txt`)
+Example `.env` template (replace placeholders with real values locally):
 
 ```
-fastapi           — API framework
-uvicorn           — ASGI server
-pydantic          — Request/response validation
-pydantic-settings — Config loading from .env
-httpx             — Async HTTP client (Ollama + SerpAPI)
-openai            — Official OpenAI Python SDK
-python-dotenv     — Environment variable loading
-slowapi           — Rate limiting middleware
-redis             — Redis client for caching
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=ollama-model-name
+SERPAPI_KEY=your_serpapi_key_here
+REDIS_URL=redis://localhost:6379/0
+CORS_ORIGINS=http://localhost:3000
+RATE_LIMIT_PER_MINUTE=60
+SESSION_TTL_MINUTES=60
 ```
 
-**Development** (`requirements-dev.txt`)
-
-```
-pytest            — Testing framework
-pytest-asyncio    — Async test support
-pytest-cov        — Coverage reporting
-httpx             — TestClient for FastAPI route testing
-ruff              — Linting and formatting
-```
-
----
-
-## Team Ownership
-
-| Member | Owns |
-|--------|------|
-| Project Lead | `main.py`, `.github/workflows/`, `Dockerfile`, `docker-compose.yml` — overall system integration, system architecture decisions, SDLC planning and supervision, project maintenance, GitHub organization management, repository structure management, CI/CD pipeline monitoring, code reviews and quality enforcement, partial testing coordination, feature planning and enhancements, dependency and version management, project monitoring and progress tracking, release planning and versioning, deployment oversight, technical decision making, issue prioritization and bug triage, documentation oversight, performance and scalability review |
-| API Layer | `app/api/` — all files |
-| Vagueness Service | `app/services/vagueness.py`, `app/prompts/vagueness_check.py` |
-| Recommendation Service | `app/services/recommender.py`, `app/prompts/intent_extraction.py` |
-| Ranking Service | `app/services/ranking.py`, `app/prompts/product_ranking.py` |
-| Product & Data Service | `app/services/products.py`, `app/utils/formatters.py` |
-| Prompt Engineer | `app/prompts/` — all files, `scripts/test_prompt.py` |
-| Core & Config | `app/core/` — all files |
-| Models & Validation | `app/models/`, `app/utils/validators.py`, `app/utils/session.py` |
-| Cache & Performance | `app/services/cache.py` |
-| Testing | `tests/` — all files, `requirements-dev.txt` |
-
-
----
-
-## Contributing
-
-Read the org-wide [CONTRIBUTING.md](https://github.com/NextGen-AI-Driven-Shopping/.github/blob/main/CONTRIBUTING.md) before submitting a PR.
-
-For backend-specific work — follow PEP 8, use type hints on all functions, keep each service focused on one job, and write tests for anything you add or change.
-
----
-
-## License
-
-MIT © [NextGen AI-Driven Shopping](https://github.com/NextGen-AI-Driven-Shopping)
+- **Do not** paste real keys into issues, PRs, or shared repos. Rotate any keys that were accidentally committed.
+- Consider keeping a ` .env.example` (without secrets) in the repo for onboarding.

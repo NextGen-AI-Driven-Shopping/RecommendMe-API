@@ -1,59 +1,102 @@
 """
-Custom exception classes and HTTP error handlers.
+Custom exception classes and global exception handler registration.
 
-Define domain-specific exceptions here.  Register all handlers with
-the FastAPI application by calling register_exception_handlers().
+All domain-specific errors inherit from BaseAPIException, which itself
+inherits from FastAPI's HTTPException so they are automatically
+serialised to JSON error responses via the standard exception handler.
+
+Call register_exception_handlers(app) in the application factory to
+attach handlers for unhandled exceptions and custom domain errors.
 """
 
-from fastapi import FastAPI, Request
+import traceback
+
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from app.core.logger import get_logger
 
-class VagueQueryError(Exception):
-    """Raised when a user query is classified as too vague to process."""
-
-    def __init__(self, message: str = "Query is too vague. Please provide more context."):
-        self.message = message
-        super().__init__(self.message)
+logger = get_logger(__name__)
 
 
-class ExternalServiceError(Exception):
-    """Raised when a required external service (OpenAI, SerpAPI, Redis) is unavailable."""
+# --------------------------------------------------------------------------- #
+# Custom exception hierarchy
+# --------------------------------------------------------------------------- #
 
-    def __init__(self, service: str, detail: str = ""):
-        self.service = service
-        self.detail = detail
-        super().__init__(f"{service} error: {detail}")
+class BaseAPIException(HTTPException):
+    """Base class for all custom API exceptions."""
+
+    def __init__(
+        self,
+        detail: str = None,
+        status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+    ):
+        super().__init__(
+            status_code=status_code,
+            detail=detail or self.__class__.__doc__,
+        )
 
 
-class RateLimitExceededError(Exception):
+class AIServiceException(BaseAPIException):
+    """Raised when OpenAI or Ollama fails to respond."""
+
+    def __init__(self, detail: str = "AI service is currently unavailable."):
+        super().__init__(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+        )
+
+
+class RateLimitException(BaseAPIException):
     """Raised when a client exceeds the configured request rate limit."""
 
-    pass
+    def __init__(self, detail: str = "Rate limit exceeded. Please try again later."):
+        super().__init__(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+        )
 
 
-# ── HTTP error handlers ────────────────────────────────────────────────────────
+class ValidationException(BaseAPIException):
+    """Raised when user input fails validation (e.g. injection detected)."""
 
-async def _vague_query_handler(request: Request, exc: VagueQueryError) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"error": exc.message})
+    def __init__(self, detail: str = "Invalid input."):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        )
 
 
-async def _external_service_handler(request: Request, exc: ExternalServiceError) -> JSONResponse:
+# --------------------------------------------------------------------------- #
+# Exception handlers
+# --------------------------------------------------------------------------- #
+
+async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Serialise any HTTPException (including our custom subclasses) to JSON."""
     return JSONResponse(
-        status_code=503,
-        content={"error": f"External service unavailable: {exc.service}"},
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
     )
 
 
-async def _rate_limit_handler(request: Request, exc: RateLimitExceededError) -> JSONResponse:
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Catch-all handler for unexpected runtime errors.
+
+    Logs the full traceback at ERROR level so the issue is visible in
+    structured logs without leaking implementation details to the caller.
+    """
+    logger.error(
+        f"Unhandled exception on {request.method} {request.url.path}: "
+        f"{exc!r}\n{traceback.format_exc()}"
+    )
     return JSONResponse(
-        status_code=429,
-        content={"error": "Rate limit exceeded. Please try again later."},
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal server error occurred."},
     )
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Attach all custom exception handlers to the FastAPI application."""
-    app.add_exception_handler(VagueQueryError, _vague_query_handler)
-    app.add_exception_handler(ExternalServiceError, _external_service_handler)
-    app.add_exception_handler(RateLimitExceededError, _rate_limit_handler)
+    """Attach all exception handlers to a FastAPI application instance."""
+    app.add_exception_handler(HTTPException, _http_exception_handler)
+    app.add_exception_handler(Exception, _unhandled_exception_handler)

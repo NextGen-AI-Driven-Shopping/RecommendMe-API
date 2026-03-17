@@ -29,7 +29,9 @@ async def extract_intent(
         IntentResult containing the refined query, category list,
         and any extracted product attributes (budget, brand, etc.).
     """
+    Extract product intent and search categories from a user query.
 
+   
     start_time = time.time()
 
     # Build prompt

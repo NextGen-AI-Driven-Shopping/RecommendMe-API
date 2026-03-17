@@ -14,7 +14,9 @@ from fastapi import Request
 
 def get_session(request: Request) -> dict:
     """Inject the in-memory session store from application state."""
-    return getattr(request.app.state, "session_store", {})
+    if not hasattr(request.app.state, "session_store"):
+        request.app.state.session_store = {}
+    return request.app.state.session_store
 
 
 def get_rate_limiter(request: Request):
