@@ -8,10 +8,11 @@ from new code — prefer get_settings() so the dependency can be overridden
 in tests.
 """
 
+import json
 from functools import lru_cache
-from typing import List
+from typing import Any, List
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,6 +85,42 @@ class Settings(BaseSettings):
     AFFILIATE_TAG: str = Field(default="")
 
     # ------------------------------------------------------------------ #
+    # Validators
+    # ------------------------------------------------------------------ #
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def validate_cors_origins(cls, v: Any) -> List[str]:
+        """
+        Safely parse CORS_ORIGINS from environment variables.
+        
+        Handles both JSON array strings and comma-separated strings,
+        preserving defaults if parsing fails.
+        """
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            # Try to parse as JSON array first
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+            
+            # Fallback: treat as comma-separated string
+            if v:
+                return [origin.strip() for origin in v.split(",") if origin.strip()]
+        
+        # Return default if parsing completely fails
+        return [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+        ]
+
+    # ------------------------------------------------------------------ #
     # Pydantic settings configuration
     # ------------------------------------------------------------------ #
     model_config = SettingsConfigDict(
@@ -103,10 +140,14 @@ def get_settings() -> Settings:
     which avoids redundant I/O and makes the instance straightforward to
     mock in tests via dependency injection or monkeypatching.
     """
-    return Settings()
+    try:
+        return Settings()
+    except Exception as e:
+        import sys
+        print(f"ERROR: Failed to load settings: {e}", file=sys.stderr)
+        raise
 
 
-# Convenience module-level instance kept for backward-compatibility with
-# existing imports that reference `settings` directly.  New code should
-# call get_settings() instead.
-settings = get_settings()
+# NOTE: Removed module-level settings = get_settings() call.
+# Settings are now lazily initialized on first use via get_settings().
+# This prevents import-time errors if environment variables are misconfigured.
