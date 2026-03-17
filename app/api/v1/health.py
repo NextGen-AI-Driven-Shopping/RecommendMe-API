@@ -47,10 +47,7 @@ async def health_check() -> HealthResponse:
     redis_status = "not configured"
     if settings.REDIS_URL:
         try:
-            r = await asyncio.wait_for(
-                redis.from_url(settings.REDIS_URL, decode_responses=True),
-                timeout=1.0
-            )
+            r = redis.from_url(settings.REDIS_URL, decode_responses=True)
             pong = await asyncio.wait_for(r.ping(), timeout=1.0)
             redis_status = "healthy" if pong else "unhealthy"
             await r.close()

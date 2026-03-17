@@ -45,4 +45,4 @@ EXPOSE 8000
 # This command will be used once backend integration is completed and
 # the service has been fully tested.
 # -----------------------------------------------------------------------------
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

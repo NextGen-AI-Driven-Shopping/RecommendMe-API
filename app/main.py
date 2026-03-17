@@ -57,3 +57,9 @@ async def root():
             "health_check": "/v1/health",
         },
     )
+
+
+@app.get("/health", include_in_schema=False)
+async def liveness():
+    """Lightweight liveness endpoint for platform health checks."""
+    return JSONResponse(status_code=200, content={"status": "ok"})
