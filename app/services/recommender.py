@@ -11,6 +11,12 @@ import time
 from openai import OpenAI
 from app.prompts.intent_extraction import build_intent_prompt
 
+from app.services.cache import (
+    get_cached_result,
+    set_cached_result,
+    build_cache_key
+)
+
 client = OpenAI()
 
 
@@ -18,6 +24,15 @@ async def extract_intent(
     query: str,
     context: list | None = None,
 ) -> IntentResult:
+    
+    # cache key
+cache_key = build_cache_key(query)
+
+# check cache
+cached = await get_cached_result(cache_key)
+if cached:
+    print("[CACHE HIT]")
+    return cached
     """
     Extract product intent and search categories from a user query.
 
@@ -66,3 +81,7 @@ async def extract_intent(
         budget=data.get("budget", None),
         attributes=data
     )
+# save to cache
+await set_cached_result(cache_key, result)
+
+return result
