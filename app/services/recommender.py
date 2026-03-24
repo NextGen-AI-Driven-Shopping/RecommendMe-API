@@ -5,11 +5,11 @@ Tier 2 AI: uses GPT-4o to parse the user query into structured intent
 and produce a list of search categories used for the SerpAPI fetch step.
 """
 
-from app.models.internal import IntentResult
 import json
 import time
 from openai import OpenAI
 from app.prompts.intent_extraction import build_intent_prompt
+from app.models.internal import IntentResult
 
 from app.services.cache import (
     get_cached_result,
@@ -24,18 +24,7 @@ async def extract_intent(
     query: str,
     context: list | None = None,
 ) -> IntentResult:
-    
-    # cache key
-cache_key = build_cache_key(query)
-
-# check cache
-cached = await get_cached_result(cache_key)
-if cached:
-    print("[CACHE HIT]")
-    return cached
     """
-    Extract product intent and search categories from a user query.
-
     Args:
         query:   The clarified user query string.
         context: Optional conversation history for richer context.
@@ -44,6 +33,15 @@ if cached:
         IntentResult containing the refined query, category list,
         and any extracted product attributes (budget, brand, etc.).
     """
+
+    # Create cache key
+    cache_key = build_cache_key(query)
+
+    # Check cache
+    cached = await get_cached_result(cache_key)
+    if cached:
+        print("[CACHE HIT]")
+        return cached
 
     start_time = time.time()
 
@@ -75,13 +73,15 @@ if cached:
     if duration > 4:
         print(f"[WARN] Intent extraction took {duration:.2f}s")
 
-    return IntentResult(
+    # Create result
+    result = IntentResult(
         query=query,
         categories=data.get("categories", []),
         budget=data.get("budget", None),
         attributes=data
     )
-# save to cache
-await set_cached_result(cache_key, result)
 
-return result
+    # Save to cache
+    await set_cached_result(cache_key, result)
+
+    return result
