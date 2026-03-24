@@ -257,17 +257,24 @@ async def _classify_with_ollama(
     model    = getattr(settings, "OLLAMA_MODEL", "")
 
     if not base_url:
-        raise VaguenessServiceError("OLLAMA_URL is not configured")
+        raise VaguenessServiceError("OLLAMA_URL is not configured; skipping Ollama provider")
 
-    async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["ollama"]) as client:
-        response = await client.post(
-            f"{base_url}/api/chat",
-            json={"model": model, "messages": messages, "stream": False},
-        )
-        response.raise_for_status()
+    if not model:
+        raise VaguenessServiceError("OLLAMA_MODEL is not configured; skipping Ollama provider")
 
-    text = response.json()["message"]["content"].strip()
-    return _parse_ai_response(text, query, "Ollama")
+    try:
+        async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["ollama"]) as client:
+            response = await client.post(
+                f"{base_url}/api/chat",
+                json={"model": model, "messages": messages, "stream": False},
+            )
+            response.raise_for_status()
+
+        text = response.json()["message"]["content"].strip()
+        return _parse_ai_response(text, query, "Ollama")
+    except Exception as e:
+        logger.warning("[Ollama] Connection failed (is Ollama running on %s?): %s", base_url, str(e)[:100])
+        raise VaguenessServiceError(f"Ollama unavailable at {base_url}: {str(e)[:50]}") from e
 
 
 async def _classify_with_groq(
@@ -276,7 +283,7 @@ async def _classify_with_groq(
     """Fallback #1 — Groq cloud with automatic model retry."""
     api_key = getattr(settings, "GROQ_API_KEY", "")
     if not api_key:
-        raise VaguenessServiceError("GROQ_API_KEY is not configured")
+        raise VaguenessServiceError("GROQ_API_KEY is not configured; skipping Groq provider")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -323,8 +330,9 @@ async def _classify_with_groq(
             last_exc = exc
             logger.debug("[Groq] model=%s error: %s", model, exc)
 
+    logger.warning("[Groq] All models failed (invalid API key? rate limited?: %s", str(last_exc)[:100])
     raise VaguenessServiceError(
-        f"All Groq models failed. Last: {last_exc}"
+        f"All Groq models failed. Last: {str(last_exc)[:50]}"
     ) from last_exc
 
 
@@ -339,17 +347,21 @@ async def _classify_with_openai(
 
     api_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
-        raise VaguenessServiceError("OPENAI_API_KEY is not configured")
+        raise VaguenessServiceError("OPENAI_API_KEY is not configured; skipping OpenAI provider")
 
-    client     = openai.AsyncOpenAI(api_key=api_key)
-    completion = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,  # type: ignore[arg-type]
-        temperature=0,
-        timeout=_PROVIDER_TIMEOUT["openai"],
-    )
-    text = (completion.choices[0].message.content or "").strip()
-    return _parse_ai_response(text, query, "OpenAI")
+    try:
+        client     = openai.AsyncOpenAI(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,  # type: ignore[arg-type]
+            temperature=0,
+            timeout=_PROVIDER_TIMEOUT["openai"],
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        return _parse_ai_response(text, query, "OpenAI")
+    except Exception as e:
+        logger.warning("[OpenAI] API call failed (invalid API key? rate limited? network error?): %s", str(e)[:100])
+        raise VaguenessServiceError(f"OpenAI API failed: {str(e)[:50]}") from e
 
 
 async def _classify_with_gemini(
@@ -358,7 +370,7 @@ async def _classify_with_gemini(
     """Fallback #3 — Google Gemini 1.5 Flash."""
     api_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     if not api_key:
-        raise VaguenessServiceError("GEMINI_API_KEY is not configured")
+        raise VaguenessServiceError("GEMINI_API_KEY is not configured; skipping Gemini provider")
 
     # Gemini v1beta REST has no system role; fold system turns into user turns
     gemini_messages = [
@@ -369,23 +381,27 @@ async def _classify_with_gemini(
         for m in messages
     ]
 
-    async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["gemini"]) as client:
-        response = await client.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={api_key}",
-            json={"contents": gemini_messages},
-        )
-        response.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["gemini"]) as client:
+            response = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-1.5-flash:generateContent?key={api_key}",
+                json={"contents": gemini_messages},
+            )
+            response.raise_for_status()
 
-    text = (
-        response.json()
-        .get("candidates", [{}])[0]
-        .get("content", {})
-        .get("parts", [{}])[0]
-        .get("text", "")
-        .strip()
-    )
-    return _parse_ai_response(text, query, "Gemini")
+        text = (
+            response.json()
+            .get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            .strip()
+        )
+        return _parse_ai_response(text, query, "Gemini")
+    except Exception as e:
+        logger.warning("[Gemini] API call failed (invalid API key? quota exceeded? network error?): %s", str(e)[:100])
+        raise VaguenessServiceError(f"Gemini API failed: {str(e)[:50]}") from e
 
 
 def _dynamic_classification(query: str) -> VaguenessResult:

@@ -19,6 +19,7 @@ async def health_check() -> HealthResponse:
     Return system health status with real service probes.
 
     Checks API key configuration and attempts actual service connectivity.
+    Uses short timeouts to prevent hanging requests.
     """
     settings = get_settings()
 
@@ -28,25 +29,31 @@ async def health_check() -> HealthResponse:
     groq_status = "configured" if settings.GROQ_API_KEY else "not configured"
     serpapi_status = "configured" if settings.SERPAPI_KEY else "not configured"
 
-    # Probe Ollama service
+    # Probe Ollama service with short timeout
     ollama_status = "not configured"
     if settings.OLLAMA_URL:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=1.0) as client:
                 resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
                 ollama_status = "healthy" if resp.status_code == 200 else "unhealthy"
+        except asyncio.TimeoutError:
+            logger.warning("Ollama probe timed out")
+            ollama_status = "timeout"
         except Exception as e:
             logger.warning(f"Ollama probe failed: {e}")
             ollama_status = "unreachable"
 
-    # Probe Redis service
+    # Probe Redis service with short timeout
     redis_status = "not configured"
     if settings.REDIS_URL:
         try:
-            r = await redis.from_url(settings.REDIS_URL, decode_responses=True)
-            pong = await r.ping()
+            r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            pong = await asyncio.wait_for(r.ping(), timeout=1.0)
             redis_status = "healthy" if pong else "unhealthy"
             await r.close()
+        except asyncio.TimeoutError:
+            logger.warning("Redis probe timed out")
+            redis_status = "timeout"
         except Exception as e:
             logger.warning(f"Redis probe failed: {e}")
             redis_status = "unreachable"

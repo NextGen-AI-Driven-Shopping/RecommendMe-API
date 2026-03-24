@@ -35,6 +35,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application source into the image.
 COPY . .
 
+# Ensure startup script can be executed by the container runtime.
+RUN chmod +x /app/start.sh
+
 # Expose the port the Uvicorn server listens on.
 EXPOSE 8000
 
@@ -45,4 +48,4 @@ EXPOSE 8000
 # This command will be used once backend integration is completed and
 # the service has been fully tested.
 # -----------------------------------------------------------------------------
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/start.sh"]
