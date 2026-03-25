@@ -16,6 +16,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logger import get_logger
 from app.core.middleware import register_middleware
 from app.core.security import configure_cors
+from app.api.v1 import auth
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,7 @@ register_middleware(app)
 register_exception_handlers(app)
 
 app.include_router(v1_router, prefix="/v1")
-
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 
 @app.get("/", include_in_schema=False)
 async def root():
