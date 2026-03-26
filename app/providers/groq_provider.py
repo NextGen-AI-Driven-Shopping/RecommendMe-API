@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
 from app.prompts.category_reasoning import (
     build_category_reasoning_messages,
     extract_json_payload,

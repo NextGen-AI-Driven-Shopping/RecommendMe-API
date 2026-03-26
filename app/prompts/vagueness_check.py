@@ -16,11 +16,13 @@ Anthropic callers should hoist the system content to the top-level param.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-logger = logging.getLogger(__name__)
+from app.core.logger import get_logger
+from app.utils.prompt_utils import build_chat_messages
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -182,10 +184,4 @@ def build_vagueness_prompt(
     if not query or not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    messages: Messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    if context:
-        messages.extend(context)
-
-    messages.append({"role": "user", "content": query.strip()})
-    return messages
+    return build_chat_messages(system_prompt=SYSTEM_PROMPT, query=query, context=context)

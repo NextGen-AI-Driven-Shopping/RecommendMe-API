@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+from app.utils.prompt_utils import build_chat_messages, extract_json_payload
 
 SYSTEM_PROMPT = """You are a shopping assistant that transforms a user query into structured output.
 Return only valid JSON with this exact schema:
@@ -33,17 +33,4 @@ def build_category_reasoning_messages(
     context: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     """Build role/content messages for chat-based providers."""
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    if context:
-        messages.extend(context)
-    messages.append({"role": "user", "content": query})
-    return messages
-
-
-def extract_json_payload(text: str) -> dict:
-    """Extract the first JSON object from model output and parse it."""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in model response")
-    return json.loads(text[start : end + 1])
+    return build_chat_messages(system_prompt=SYSTEM_PROMPT, query=query, context=context)

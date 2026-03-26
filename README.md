@@ -108,12 +108,18 @@ Response example (recommendations):
 ## Setup
 
 1. Install dependencies.
-2. Configure `.env`.
+2. Configure `.env` (optionally start from `Environment/.env.example`).
 3. Start the API.
 
 ```bash
-pip install -r requirements.txt
+pip install -r Requirements/requirements.txt
 uvicorn app.main:app --reload
+```
+
+Install dev tooling:
+
+```bash
+pip install -r Requirements/requirements-dev.txt
 ```
 
 ## Environment Variables
@@ -230,4 +236,4 @@ SESSION_TTL_MINUTES=60
 ```
 
 - **Do not** paste real keys into issues, PRs, or shared repos. Rotate any keys that were accidentally committed.
-- Consider keeping a ` .env.example` (without secrets) in the repo for onboarding.
+- Keep `Environment/.env.example` (without secrets) in the repo for onboarding.

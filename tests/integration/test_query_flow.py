@@ -39,7 +39,7 @@ def test_vague_query_returns_clarification(monkeypatch):
             follow_ups=["What budget range should I target?"],
         )
 
-    monkeypatch.setattr("app.api.v1.query.classify_vagueness", _fake_classify_vagueness)
+    monkeypatch.setattr("app.routes.v1.query.classify_vagueness", _fake_classify_vagueness)
 
     response = _post("/v1/query", {"user_message": "help", "conversation_history": []})
 
@@ -79,9 +79,9 @@ def test_clear_query_returns_recommendations(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr("app.api.v1.query.classify_vagueness", _fake_classify_vagueness)
-    monkeypatch.setattr("app.api.v1.query.generate_category_plan", _fake_generate_category_plan)
-    monkeypatch.setattr("app.api.v1.query.fetch_products", _fake_fetch_products)
+    monkeypatch.setattr("app.routes.v1.query.classify_vagueness", _fake_classify_vagueness)
+    monkeypatch.setattr("app.routes.v1.query.generate_category_plan", _fake_generate_category_plan)
+    monkeypatch.setattr("app.routes.v1.query.fetch_products", _fake_fetch_products)
 
     response = _post(
         "/v1/query",
@@ -118,9 +118,9 @@ def test_clear_query_uses_local_product_fallback_when_fetch_fails(monkeypatch):
     async def _fake_fetch_products(category: str, query: str):
         return None
 
-    monkeypatch.setattr("app.api.v1.query.classify_vagueness", _fake_classify_vagueness)
-    monkeypatch.setattr("app.api.v1.query.generate_category_plan", _fake_generate_category_plan)
-    monkeypatch.setattr("app.api.v1.query.fetch_products", _fake_fetch_products)
+    monkeypatch.setattr("app.routes.v1.query.classify_vagueness", _fake_classify_vagueness)
+    monkeypatch.setattr("app.routes.v1.query.generate_category_plan", _fake_generate_category_plan)
+    monkeypatch.setattr("app.routes.v1.query.fetch_products", _fake_fetch_products)
 
     response = _post("/v1/query", {"user_message": "I need a lightweight stove for trekking"})
 
@@ -129,3 +129,24 @@ def test_clear_query_uses_local_product_fallback_when_fetch_fails(monkeypatch):
     product = data["categories"][0]["products"][0]
     assert product["url"].startswith("https://www.google.com/search?q=")
     assert "live listings unavailable" in product["explanation"].lower()
+
+
+def test_sufficiency_check_returns_stage_metadata():
+    response = _post(
+        "/v1/query/sufficiency_check",
+        {
+            "user_message": "headphones",
+            "clarification": [
+                {"question": "Main use?", "answer": "work calls"},
+                {"question": "Type?", "answer": "over-ear"},
+                {"question": "Budget?", "answer": "under $100"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "sufficient" in data
+    assert "score" in data
+    assert data["clarification_round"] in (1, 2)
+    assert data["max_total_questions"] == 5
