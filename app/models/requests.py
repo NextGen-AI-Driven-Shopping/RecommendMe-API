@@ -58,3 +58,18 @@ class QueryRequest(BaseModel):
         if isinstance(value, str):
             return value.strip()
         return value
+
+
+class SufficiencyCheckRequest(BaseModel):
+    """Request body for POST /v1/query/sufficiency_check."""
+
+    user_message: str = Field(..., min_length=3, max_length=500)
+    clarification: Optional[List[ClarificationAnswer]] = Field(default_factory=list)
+    max_total_questions: int = Field(default=5, ge=3, le=5)
+
+    @field_validator("user_message", mode="before")
+    @classmethod
+    def strip_sufficiency_user_message(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value

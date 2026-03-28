@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from openai import AsyncOpenAI
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
 from app.prompts.category_reasoning import (
     build_category_reasoning_messages,
     extract_json_payload,

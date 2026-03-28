@@ -1,5 +1,6 @@
 [build]
 builder = "dockerfile"
+dockerfilePath = "Docker/Dockerfile"
 
 [deploy]
 # Use repository startup script to avoid shell-quoting issues with $PORT expansion.

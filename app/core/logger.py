@@ -14,7 +14,8 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 class _JSONFormatter(logging.Formatter):
     """Render log records as single-line JSON objects."""
@@ -25,6 +26,7 @@ class _JSONFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
+            "line": record.lineno,
         }
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
@@ -32,12 +34,33 @@ class _JSONFormatter(logging.Formatter):
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a JSON-formatted logger for the given module name."""
+    """Return a structured logger with output pinned to backend-local log paths."""
     logger = logging.getLogger(name)
+
     if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(_JSONFormatter())
-        logger.addHandler(handler)
+        formatter = _JSONFormatter()
+
+        # Pin logs to backend/app/core/logs so CWD does not leak files outside backend.
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = log_dir / "app.log"
+
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+
+        # File handler (rotating)
+        file_handler = RotatingFileHandler(
+            str(log_file_path),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3
+        )
+        file_handler.setFormatter(formatter)
+
+        logger.addHandler(console_handler)
+        logger.addHandler(file_handler)
+
         logger.propagate = False
+
     logger.setLevel(logging.INFO)
     return logger

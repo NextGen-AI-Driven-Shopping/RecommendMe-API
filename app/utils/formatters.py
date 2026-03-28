@@ -7,10 +7,8 @@ handles optional affiliate URL tag injection for all outbound product links.
 Public API:
   build_recommendation_response()  — wraps ranked results in a QueryResponse.
   build_clarification_response()   — wraps a follow-up question in a QueryResponse.
-  apply_affiliate_tags()           — rewrites product URLs with the affiliate tag.
 """
 
-from app.core.config import get_settings
 from app.models.responses import CategoryResult, ProductCard, QueryResponse
 
 
@@ -41,6 +39,10 @@ def build_recommendation_response(
 def build_clarification_response(
     message_or_follow_ups: str | list[str],
     session_id: str | None = None,
+    clarification_round: int | None = None,
+    asked_questions: int | None = None,
+    max_total_questions: int | None = None,
+    sufficiency_score: float | None = None,
 ) -> QueryResponse:
     """
     Assemble a clarification-needed response.
@@ -66,23 +68,10 @@ def build_clarification_response(
         message=message,
         questions=questions,
         session_id=session_id,
+        clarification_round=clarification_round,
+        asked_questions=asked_questions,
+        max_total_questions=max_total_questions,
+        sufficiency_score=sufficiency_score,
     )
 
 
-def tag_affiliate_url(url: str) -> str:
-    """
-    Append the configured affiliate tag to a product URL.
-
-    If AFFILIATE_TAG is empty or not configured, the original URL is
-    returned unchanged.
-    """
-    settings = get_settings()
-    if not settings.AFFILIATE_TAG:
-        return url
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}tag={settings.AFFILIATE_TAG}"
-
-
-def apply_affiliate_tags(products: list[ProductCard]) -> list[ProductCard]:
-    """Return a new list of ProductCards with affiliate tags applied to all URLs."""
-    return [p.model_copy(update={"url": tag_affiliate_url(p.url)}) for p in products]

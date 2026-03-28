@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
 from app.core.logger import get_logger
 from app.models.responses import ProductCard
 

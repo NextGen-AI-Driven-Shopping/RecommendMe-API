@@ -104,11 +104,19 @@ class DynamicIntentAnalyzer:
         return missing
     
     @staticmethod
-    def is_query_clear(signals: dict, missing: dict) -> bool:
+    def is_query_clear(signals_or_query, missing: dict | None = None) -> bool:
         """
         Determine if query is CLEAR enough for recommendations
         based on signal analysis.
         """
+        if isinstance(signals_or_query, str):
+            signals = DynamicIntentAnalyzer.extract_domain_signals(signals_or_query)
+            missing = DynamicIntentAnalyzer.determine_missing_info(signals)
+        else:
+            signals = signals_or_query
+            if missing is None:
+                missing = DynamicIntentAnalyzer.determine_missing_info(signals)
+
         # If has specific product + use case/type + price = CLEAR
         if signals['primary_nouns']:
             clear_score = sum([
@@ -137,7 +145,12 @@ class DynamicFollowUpGenerator:
     """Generates context-aware follow-up questions based on actual query analysis."""
     
     @staticmethod
-    def generate_from_signals(query: str, signals: dict, missing: dict) -> list[str]:
+    def generate_from_signals(
+        query: str,
+        signals: dict,
+        missing: dict,
+        max_questions: int = 3,
+    ) -> list[str]:
         """
         Generate up to 3 contextual follow-up questions based on
         what information is missing and what the query reveals.
@@ -183,8 +196,9 @@ class DynamicFollowUpGenerator:
             if pref_q:
                 questions.append(pref_q)
         
-        # Keep to max 3 questions
-        return questions[:3]
+        # Keep to requested maximum questions
+        max_questions = max(1, min(int(max_questions or 3), 5))
+        return questions[:max_questions]
     
     @staticmethod
     def _generate_use_case_question(product: str) -> str:
@@ -234,34 +248,3 @@ class DynamicFollowUpGenerator:
         return "Are there any specific brands or features you prefer?"
 
 
-def analyze_query_for_vagueness(query: str) -> tuple[bool, list[str]]:
-    """
-    Entry point: Analyze query and return (is_clear, follow_up_questions)
-    
-    Args:
-        query: The user's product query
-        
-    Returns:
-        (is_clear: bool, questions: list[str])
-    """
-    analyzer = DynamicIntentAnalyzer()
-    
-    # Extract signals from the query
-    signals = analyzer.extract_domain_signals(query)
-    missing = analyzer.determine_missing_info(signals)
-    
-    # Determine if query is clear
-    is_clear = analyzer.is_query_clear(signals, missing)
-    
-    if is_clear:
-        return (True, [])
-    
-    # Generate context-aware follow-ups
-    generator = DynamicFollowUpGenerator()
-    questions = generator.generate_from_signals(query, signals, missing)
-    
-    logger.debug(
-        f"Query analysis: is_clear={is_clear}, signals={signals}, missing_count={missing['count']}, questions={len(questions)}"
-    )
-    
-    return (False, questions)
