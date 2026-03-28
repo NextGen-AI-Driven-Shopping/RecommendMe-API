@@ -51,6 +51,36 @@ class QueryResponse(BaseModel):
     )
     categories: Optional[List[CategoryResult]] = None
     session_id: Optional[str] = None
+    clarification_round: Optional[int] = Field(
+        None,
+        description="Clarification stage index: 1 for initial 3 questions, 2 for additional stage.",
+    )
+    asked_questions: Optional[int] = Field(
+        None,
+        description="Number of clarification Q&A pairs gathered so far.",
+    )
+    max_total_questions: Optional[int] = Field(
+        None,
+        description="Configured maximum clarification question count.",
+    )
+    sufficiency_score: Optional[float] = Field(
+        None,
+        description="Confidence score in [0,1] indicating whether user intent is sufficiently specified.",
+    )
+
+
+class SufficiencyCheckResponse(BaseModel):
+    """Response body for POST /v1/query/sufficiency_check."""
+
+    sufficient: bool
+    score: float
+    asked_questions: int
+    max_total_questions: int
+    next_questions: List[str] = Field(default_factory=list)
+    clarification_round: int = Field(
+        ...,
+        description="1 for initial stage, 2 when additional targeted questions are returned.",
+    )
 
 
 class HealthResponse(BaseModel):

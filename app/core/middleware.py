@@ -22,24 +22,55 @@ logger = get_logger(__name__)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Log every incoming request with its duration and correlation ID."""
-
     async def dispatch(self, request: Request, call_next) -> Response:
-        correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
+        correlation_id = (
+            request.headers.get("X-Correlation-ID")
+            or str(uuid.uuid4())
+        )
+
+        request.state.correlation_id = correlation_id
         start = time.perf_counter()
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+
+            logger.error(
+                "request_failed",
+                extra={
+                    "method": request.method,
+                    "path": str(request.url),
+                    "duration_ms": duration_ms,
+                    "correlation_id": correlation_id,
+                },
+                exc_info=True,
+            )
+            raise
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.info(
-            f"{request.method} {request.url.path} "
-            f"status={response.status_code} duration={duration_ms}ms "
-            f"correlation_id={correlation_id}"
-        )
+
+        log_data = {
+            "method": request.method,
+            "path": str(request.url),
+            "status": response.status_code,
+            "duration_ms": duration_ms,
+            "correlation_id": correlation_id,
+            "client_ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+        }
+
+        if response.status_code >= 500:
+            logger.error("request_completed", extra=log_data)
+        elif response.status_code >= 400:
+            logger.warning("request_completed", extra=log_data)
+        else:
+            logger.info("request_completed", extra=log_data)
+
         response.headers["X-Correlation-ID"] = correlation_id
         return response
 
 
 def register_middleware(app: FastAPI) -> None:
-    """Attach all middleware to the FastAPI application."""
+    """Register all middleware used by the API application."""
     app.add_middleware(RequestLoggingMiddleware)

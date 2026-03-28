@@ -35,7 +35,8 @@ from typing import TypeAlias
 
 import httpx
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
+from app.prompts.category_reasoning import extract_json_payload
 from app.core.logger import get_logger
 from app.prompts.vagueness_check import build_vagueness_prompt
 from app.services.dynamic_intent_analyzer import (
@@ -53,9 +54,9 @@ Messages: TypeAlias = list[dict[str, str]]
 
 _PROVIDER_TIMEOUT: dict[str, float] = {
     "ollama": 8.0,
-    "groq":   10.0,
-    "openai": 12.0,
-    "gemini": 10.0,
+    "groq":   8.0,
+    "openai": 8.0,
+    "gemini": 8.0,
 }
 
 
@@ -175,10 +176,9 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
     cleaned = _strip_code_fences(raw)
 
     # ── 1. JSON extraction ────────────────────────────────────────────────
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start != -1 and end > start:
+    if "{" in cleaned and "}" in cleaned:
         try:
-            data: dict = json.loads(cleaned[start : end + 1])
+            data: dict = extract_json_payload(cleaned)
             cls_raw = str(data.get("classification", "")).upper().strip()
 
             if cls_raw == Classification.CLEAR:

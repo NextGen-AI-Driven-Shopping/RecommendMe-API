@@ -45,6 +45,11 @@ def detect_injection(query: str) -> bool:
     return any(pattern.search(query) for pattern in _COMPILED_PATTERNS)
 
 
+def sanitize_query(query: str) -> str:
+    """Strip whitespace and remove null bytes from user input."""
+    return (query or "").strip().replace("\x00", "")
+
+
 def is_valid_query(query: str) -> tuple[bool, str]:
     """
     Run all validations on a query string.
@@ -61,3 +66,10 @@ def is_valid_query(query: str) -> tuple[bool, str]:
     if detect_injection(query):
         return False, "Query contains disallowed patterns."
     return True, ""
+
+
+def sanitize_and_validate_query(query: str) -> tuple[str, bool, str]:
+    """Return sanitized query plus validation status and reason."""
+    cleaned = sanitize_query(query)
+    is_valid, reason = is_valid_query(cleaned)
+    return cleaned, is_valid, reason

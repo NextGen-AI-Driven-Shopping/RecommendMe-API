@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from app.core.logger import get_logger
-from app.models.internal import IntentResult
 from app.providers import (
     BaseCategoryProvider,
     CategoryReasoningResult,
@@ -82,25 +81,3 @@ async def generate_category_plan(
     joined_errors = " | ".join(errors)
     logger.error("All providers failed for category reasoning. errors=%s", joined_errors)
     raise RecommendationServiceError("All category reasoning providers failed.")
-
-
-async def extract_intent(
-    query: str,
-    context: list | None = None,
-) -> IntentResult | None:
-    """Backward-compatible wrapper that maps category plan to IntentResult."""
-    try:
-        plan = await generate_category_plan(query=query, context=context)
-    except RecommendationServiceError as exc:
-        logger.error("extract_intent failed: %s", exc)
-        return None
-
-    return IntentResult(
-        original_query=query,
-        refined_query=query,
-        categories=plan.categories,
-        attributes={
-            "reasoning": plan.reasoning,
-            "recommended_products": plan.recommended_products,
-        },
-    )
