@@ -31,6 +31,11 @@ class OllamaProvider(BaseCategoryProvider):
         timeout_seconds: float = 8.0,
     ) -> CategoryReasoningResult:
         settings = get_settings()
+        base_url = (settings.OLLAMA_URL or "").strip()
+        if not base_url.startswith(("http://", "https://")):
+            raise ProviderUnavailableError(
+                "OLLAMA_URL must start with 'http://' or 'https://'"
+            )
 
         body = {
             "model": settings.OLLAMA_MODEL,
@@ -41,7 +46,7 @@ class OllamaProvider(BaseCategoryProvider):
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
-                    f"{settings.OLLAMA_URL.rstrip('/')}/api/chat",
+                    f"{base_url.rstrip('/')}/api/chat",
                     json=body,
                 )
                 response.raise_for_status()

@@ -23,8 +23,15 @@ class ConversationMessage(BaseModel):
 
 class ClarificationAnswer(BaseModel):
     """A single follow-up question and its answer."""
-    question: str
-    answer: str
+    question: str = Field(..., min_length=1, max_length=500)
+    answer: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("question", "answer", mode="before")
+    @classmethod
+    def strip_clarification_fields(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 class QueryRequest(BaseModel):
     """Request body for POST /v1/query."""
@@ -32,7 +39,7 @@ class QueryRequest(BaseModel):
     # The user's current message / search query.
     user_message: str = Field(
         ...,
-        min_length=3,
+        min_length=1,
         max_length=500,
         description="The user's product search query or conversational message.",
     )

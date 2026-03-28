@@ -43,3 +43,10 @@ def test_classify_vagueness_returns_vague_with_followups(monkeypatch):
     assert result.classification == "VAGUE"
     assert result.follow_ups is not None
     assert len(result.follow_ups) == 3
+
+
+def test_classify_vagueness_marks_broad_activity_query_as_vague():
+    result = asyncio.run(classify_vagueness("i am going for trekking", allow_fallback=False))
+
+    assert result.classification == "VAGUE"
+    assert result.provider == "Heuristic"

@@ -7,7 +7,8 @@ the application.  Do NOT import the module-level `settings` object directly
 from new code — prefer get_settings() so the dependency can be overridden
 in tests.
 """
-
+from dotenv import load_dotenv
+load_dotenv() # This forces the .env to load immediately 
 import json
 from functools import lru_cache
 from typing import Any, List

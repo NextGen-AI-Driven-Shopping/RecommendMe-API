@@ -126,3 +126,19 @@ class RankedProduct(BaseModel):
         le=1.0,
         description="Relevance score from the ranking model (0–1).",
     )
+    # ---------------------------------------------------------------------------
+# User & Authentication — database models
+# ---------------------------------------------------------------------------
+class UserInternal(BaseModel):
+    """
+    Internal representation of a user in the database.
+    
+    Includes sensitive information like hashed_password that should 
+    NEVER be returned to the frontend.
+    """
+    id: str = Field(..., description="Unique UUID for the user")
+    email: str = Field(..., description="User's primary email address")
+    full_name: str
+    hashed_password: str = Field(..., description="The salted/hashed password string")
+    is_active: bool = Field(default=True)
+    created_at: str = Field(..., description="ISO timestamp of account creation")
