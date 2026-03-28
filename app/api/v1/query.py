@@ -33,9 +33,7 @@ def _build_fallback_questions(query: str) -> list[str]:
 
 
 @router.post("/query", response_model=QueryResponse)
-async def handle_query(
-    payload: QueryRequest,
-) -> QueryResponse:
+async def handle_query(payload: QueryRequest) -> QueryResponse:
     """Process user query through vagueness detection and provider fallback orchestration."""
     clean_query = sanitize_input(payload.user_message)
     is_valid, reason = is_valid_query(clean_query)
@@ -70,7 +68,7 @@ async def handle_query(
     if vagueness_result.classification == "VAGUE":
         follow_ups = vagueness_result.follow_ups or _build_fallback_questions(clean_query)
         response = build_clarification_response(
-            message_or_follow_ups=follow_ups[:3],
+            message_or_follow_ups=follow_ups[:5],  # Limit to top 5 follow-ups
             session_id=session_id,
         )
         set_session(

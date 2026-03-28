@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(default="")
     GEMINI_MODEL: str = "gemini-2.0-flash"
     GROQ_API_KEY: str = Field(default="")
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "gpt-oss-120B"
     
     # Additional AI and third-party APIs
     GROK_API_KEY: str = Field(default="")

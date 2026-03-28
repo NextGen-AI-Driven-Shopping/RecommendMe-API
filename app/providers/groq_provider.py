@@ -45,8 +45,9 @@ class GroqProvider(BaseCategoryProvider):
 
         candidate_models = [
             settings.GROQ_MODEL,
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
+            "gpt-oss-120B",
+            "kimi-3.5-pro",
+
         ]
         deduped_models: list[str] = []
         for model in candidate_models:
