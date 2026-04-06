@@ -2,56 +2,48 @@
 
 ## Purpose
 
-RecommendMe API exposes a stable HTTP interface for shopping recommendation workflows while isolating AI-provider volatility behind a service abstraction.
+RecommendMe API exposes stable contracts for conversational shopping recommendations.
 
-## Consumers
+## Layered Design
 
-- Frontend applications integrating guided product discovery.
-- Backend clients that require deterministic response schemas.
-- Internal AI workflow consumers needing fallback-safe orchestration.
+- `app/routes/v1` - HTTP route handlers and response contracts
+- `app/services` - orchestration and business logic
+- `app/providers` - LLM adapters with normalized payload validation
+- `app/models` - request/response schemas
+- `app/prompts` - prompt templates
+- `app/core` - middleware, exceptions, security, logging
 
-## Architectural Layers
-
-- `app/api/`: route handlers and API contracts.
-- `app/services/`: domain orchestration logic.
-- `app/providers/`: provider adapters with uniform output validation.
-- `app/prompts/`: reusable prompt definitions.
-- `app/models/`: Pydantic contracts for request/response/internal data.
-- `app/core/`: configuration, middleware, logging, exception handling.
-
-## Endpoint Design
-
-Main endpoint:
+## Core Endpoints
 
 - `POST /v1/query`
-
-Supporting endpoint:
-
+- `POST /v1/query/sufficiency_check`
+- `POST /v1/auth/signup`
+- `POST /v1/auth/login`
 - `GET /v1/health`
-
-Design characteristics:
-
-- Stateless request processing with optional session continuity.
-- Pydantic-validated payloads.
-- Centralized exception-to-HTTP mapping.
-- Structured JSON logs.
 
 ## Query Lifecycle
 
-User Query
--> sanitize and validate
--> vagueness detection (Ollama)
--> clarification response if vague
--> provider orchestration for category reasoning
--> SerpAPI enrichment (when configured)
--> structured response assembly
+1. Validate and sanitize user input.
+2. Vagueness classification.
+3. If vague: return guided follow-ups.
+4. If clear: run category reasoning with tiered LLM fallback.
+5. Fetch and rank category products.
+6. Return normalized recommendation response.
 
 ## Reliability Strategy
 
-- Provider abstraction hides API-specific details.
-- Hard fallback order for category reasoning:
-  1. Gemini
-  2. GROQ
-  3. OpenAI
-  4. Ollama
-- Fallback on timeout, HTTP errors, invalid payloads, or missing credentials.
+Reasoning fallback tiers:
+
+1. Groq (up to 4 models)
+2. OpenAI (up to 4 models)
+3. Gemini (up to 4 models)
+
+If all fail, return:
+
+`All AI services are currently busy. Please try again in a moment.`
+
+## Integration Contracts
+
+- Backend response model uses `status` (`clarification_needed` or `recommendations`)
+- Frontend normalizes this model to UI-specific type handling
+- Auth endpoints return user profile + token (MVP session storage)

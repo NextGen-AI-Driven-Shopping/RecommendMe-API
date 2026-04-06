@@ -27,6 +27,8 @@ class CategoryResult(BaseModel):
     """Ranked product recommendations grouped under a single category."""
 
     category: str
+    tagline: Optional[str] = None
+    why_needed: Optional[str] = None
     products: List[ProductCard]
 
 
@@ -93,3 +95,31 @@ class HealthResponse(BaseModel):
     gemini: Optional[str] = None
     groq: Optional[str] = None
     serpapi: Optional[str] = None
+
+
+class AuthUser(BaseModel):
+    """Public auth user profile returned to frontend."""
+
+    user_id: str
+    username: str
+    first_name: str
+    last_name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    created_at: str
+
+
+class AuthSignupResponse(BaseModel):
+    """Response body for POST /v1/auth/signup."""
+
+    message: str
+    token: str
+    user: AuthUser
+
+
+class AuthLoginResponse(BaseModel):
+    """Response body for POST /v1/auth/login."""
+
+    message: str
+    token: str
+    user: AuthUser

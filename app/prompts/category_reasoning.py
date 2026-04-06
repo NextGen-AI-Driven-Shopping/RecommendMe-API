@@ -19,11 +19,13 @@ Return only valid JSON with this exact schema:
 }
 Rules:
 - categories must include 1 to 5 concise shopping categories.
-- recommended_products must include 3 to 8 specific products. Each product needs:
+- recommended_products must include 6 to 15 specific products. Each product needs:
   - name: Specific product type name
-  - explanation: Short explanation of why it fits the user
-  - label: E.g., "Best Pick", "Runner Up", "AI Top Pick", or "Other"
+  - explanation: One-line reason tied to use case, environment, or budget
+  - label: Ranking label like "Best Choice", "Top 2", "Top 3", ...
 - reasoning must be concise and grounded in the query context.
+- Prefer categories that are essential for the user's context (not generic broad buckets).
+- Follow-up recommendations must reflect relevance, budget fit, and use-case alignment.
 - Never include markdown, code fences, or extra keys.
 """
 

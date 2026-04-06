@@ -1,65 +1,40 @@
 # AI Model Pipeline
 
-## Overview
+## Stage 1: Query Clarity
 
-The AI pipeline has two decision stages:
+Service: `app/services/vagueness.py`
 
-1. Vagueness detection.
-2. Category and product reasoning.
+- Classifies input as `CLEAR` or `VAGUE`.
+- For vague inputs, returns guided, option-rich follow-up questions.
+- Clarification flow supports max 5 questions (3 initial + up to 2 additional).
 
-## Stage 1: Vagueness Detection
+Fallback tiers:
 
-Primary provider:
+1. Groq models (max 4)
+2. OpenAI models (max 4)
+3. Gemini models (max 4)
 
-- Ollama (`app/services/vagueness.py`)
+If all tiers fail, API returns a short busy message.
 
-Behavior:
+## Stage 2: Category and Product Planning
 
-- If query is `VAGUE`, API returns clarification prompts.
-- If query is `CLEAR`, API proceeds to category reasoning.
+Service: `app/services/recommender.py`
 
-Fallback:
+- Produces category list, reasoning summary, and planned product candidates.
+- Uses the same tiered LLM fallback sequence.
 
-- OpenAI mini model fallback is used internally in vagueness service when Ollama fails.
+## Stage 3: Product Retrieval
 
-## Stage 2: Category and Product Reasoning
+Service: `app/routes/v1/query.py` + `app/services/products.py`
 
-Service:
+Per category:
 
-- `app/services/recommender.py`
+- Fetch up to 10 items.
+- Planned items are fetched individually (up to 10).
+- Remaining planned items are fetched with grouped query fallback.
+- If live fetch fails, fallback product cards with search links are returned.
 
-Provider chain:
+## Ranking and Labels
 
-1. Gemini
-2. GROQ
-3. OpenAI
-4. Ollama
-
-Expected normalized output schema:
-
-```json
-{
-  "categories": ["category name"],
-  "reasoning": "why these categories/products fit",
-  "recommended_products": ["product type name"]
-}
-```
-
-If all providers fail:
-
-- API raises `AIServiceException` and returns `503`.
-
-## Failure Conditions Triggering Fallback
-
-- API/network error
-- request timeout
-- invalid JSON output
-- invalid output schema
-- missing provider credentials
-
-## Product Enrichment
-
-After category reasoning:
-
-- API tries SerpAPI product fetch per category.
-- If SerpAPI is unavailable, API returns local product placeholders derived from AI recommendations.
+- Rank label assigned as `Best Choice`, then `Top N`.
+- Product explanation is included for recommendation transparency.

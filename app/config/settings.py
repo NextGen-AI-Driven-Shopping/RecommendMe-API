@@ -20,11 +20,14 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = Field(default="")
     OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODELS: List[str] = []
 
     GEMINI_API_KEY: str = Field(default="")
     GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODELS: List[str] = []
     GROQ_API_KEY: str = Field(default="")
     GROQ_MODEL: str = "gpt-oss-120B"
+    GROQ_MODELS: List[str] = []
 
     GROK_API_KEY: str = Field(default="")
     OTHER_API_KEY: str = Field(default="")
@@ -47,6 +50,7 @@ class Settings(BaseSettings):
     SESSION_TTL_MINUTES: int = 30
     REDIS_URL: str = Field(default="")
     AFFILIATE_TAG: str = Field(default="")
+    USERS_CSV_PATH: str = Field(default="app/data/users.csv")
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -71,6 +75,23 @@ class Settings(BaseSettings):
             "http://localhost:8080",
             "http://127.0.0.1:8080",
         ]
+
+    @field_validator("OPENAI_MODELS", "GEMINI_MODELS", "GROQ_MODELS", mode="before")
+    @classmethod
+    def validate_model_lists(cls, value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(model).strip() for model in value if str(model).strip()]
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(model).strip() for model in parsed if str(model).strip()]
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return []
 
     model_config = SettingsConfigDict(
         env_file=("Environment/.env", ".env"),

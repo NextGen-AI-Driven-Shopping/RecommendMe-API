@@ -6,11 +6,10 @@ product recommendations, or whether a clarifying follow-up is needed.
 
 Provider priority
 -----------------
-1. Ollama   — local model, primary (fast, free, private)
-2. Groq     — cloud fallback (fast, free tier)
-3. OpenAI   — cloud fallback #2 (GPT-4o-mini)
-4. Gemini   — cloud fallback #3
-5. Dynamic  — DynamicIntentAnalyzer, no AI, no hardcoded strings
+1. Groq     — primary tier, up to 4 models
+2. OpenAI   — fallback tier, up to 4 models
+3. Gemini   — fallback tier, available models
+4. Dynamic  — DynamicIntentAnalyzer, no AI, no hardcoded strings
 
 If DynamicIntentAnalyzer produces no questions, the classification is set
 to ``RETRY`` — the caller should prompt the user to re-enter their query
@@ -53,11 +52,12 @@ logger = get_logger(__name__)
 Messages: TypeAlias = list[dict[str, str]]
 
 _PROVIDER_TIMEOUT: dict[str, float] = {
-    "ollama": 8.0,
     "groq":   8.0,
     "openai": 8.0,
     "gemini": 8.0,
 }
+
+BUSY_MESSAGE = "All AI services are currently busy. Please try again in a moment."
 
 
 class Classification(str, Enum):
@@ -106,12 +106,7 @@ class VaguenessResult:
         The message is deliberately specific so the user knows *what* to add,
         not just that their query was "too vague".
         """
-        return (
-            "We couldn't figure out what you need from that. "
-            "Try adding the activity, intended use, terrain, or a key feature — "
-            "for example: \"trekking boots for rocky mountain trails\" "
-            "or \"wireless headphones for daily commuting under ₹3000\"."
-        )
+        return BUSY_MESSAGE
 
 
 # ---------------------------------------------------------------------------
@@ -249,34 +244,6 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
 # ---------------------------------------------------------------------------
 
 
-async def _classify_with_ollama(
-    query: str, messages: Messages, settings
-) -> VaguenessResult:
-    """Primary classifier — local Ollama instance."""
-    base_url = getattr(settings, "OLLAMA_URL", "").rstrip("/")
-    model    = getattr(settings, "OLLAMA_MODEL", "")
-
-    if not base_url:
-        raise VaguenessServiceError("OLLAMA_URL is not configured; skipping Ollama provider")
-
-    if not model:
-        raise VaguenessServiceError("OLLAMA_MODEL is not configured; skipping Ollama provider")
-
-    try:
-        async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["ollama"]) as client:
-            response = await client.post(
-                f"{base_url}/api/chat",
-                json={"model": model, "messages": messages, "stream": False},
-            )
-            response.raise_for_status()
-
-        text = response.json()["message"]["content"].strip()
-        return _parse_ai_response(text, query, "Ollama")
-    except Exception as e:
-        logger.warning("[Ollama] Connection failed (is Ollama running on %s?): %s", base_url, str(e)[:100])
-        raise VaguenessServiceError(f"Ollama unavailable at {base_url}: {str(e)[:50]}") from e
-
-
 async def _classify_with_groq(
     query: str, messages: Messages, settings
 ) -> VaguenessResult:
@@ -291,13 +258,12 @@ async def _classify_with_groq(
     }
 
     candidate_models: list[str] = []
-    for m in [
-        getattr(settings, "GROQ_MODEL", ""),
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ]:
+    configured_models = getattr(settings, "GROQ_MODELS", []) or []
+    for m in [*configured_models, getattr(settings, "GROQ_MODEL", ""), "gpt-oss-120b", "kimi-k2-instruct", "qwen/qwen3-32b", "llama-3.3-70b-versatile"]:
         if m and m not in candidate_models:
             candidate_models.append(m)
+
+    candidate_models = candidate_models[:4]
 
     last_exc: Exception | None = None
 
@@ -339,7 +305,7 @@ async def _classify_with_groq(
 async def _classify_with_openai(
     query: str, messages: Messages, settings
 ) -> VaguenessResult:
-    """Fallback #2 — OpenAI GPT-4o-mini."""
+    """Fallback #2 — OpenAI with model retries."""
     try:
         import openai
     except ImportError as exc:
@@ -349,25 +315,38 @@ async def _classify_with_openai(
     if not api_key:
         raise VaguenessServiceError("OPENAI_API_KEY is not configured; skipping OpenAI provider")
 
-    try:
-        client     = openai.AsyncOpenAI(api_key=api_key)
-        completion = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,  # type: ignore[arg-type]
-            temperature=0,
-            timeout=_PROVIDER_TIMEOUT["openai"],
-        )
-        text = (completion.choices[0].message.content or "").strip()
-        return _parse_ai_response(text, query, "OpenAI")
-    except Exception as e:
-        logger.warning("[OpenAI] API call failed (invalid API key? rate limited? network error?): %s", str(e)[:100])
-        raise VaguenessServiceError(f"OpenAI API failed: {str(e)[:50]}") from e
+    candidate_models: list[str] = []
+    configured_models = getattr(settings, "OPENAI_MODELS", []) or []
+    for model in [*configured_models, getattr(settings, "OPENAI_MODEL", ""), "gpt-4.1", "gpt-4o", "gpt-4.1-mini"]:
+        if model and model not in candidate_models:
+            candidate_models.append(model)
+
+    candidate_models = candidate_models[:4]
+    last_exc: Exception | None = None
+
+    for model in candidate_models:
+        try:
+            client = openai.AsyncOpenAI(api_key=api_key)
+            completion = await client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=0,
+                timeout=_PROVIDER_TIMEOUT["openai"],
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            return _parse_ai_response(text, query, "OpenAI")
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("[OpenAI] model=%s error=%s", model, exc)
+
+    logger.warning("[OpenAI] all candidate models failed: %s", str(last_exc)[:120])
+    raise VaguenessServiceError(f"OpenAI API failed: {str(last_exc)[:50]}") from last_exc
 
 
 async def _classify_with_gemini(
     query: str, messages: Messages, settings
 ) -> VaguenessResult:
-    """Fallback #3 — Google Gemini 1.5 Flash."""
+    """Fallback #3 — Google Gemini with model retries."""
     api_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         raise VaguenessServiceError("GEMINI_API_KEY is not configured; skipping Gemini provider")
@@ -381,27 +360,40 @@ async def _classify_with_gemini(
         for m in messages
     ]
 
-    try:
-        async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["gemini"]) as client:
-            response = await client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-1.5-flash:generateContent?key={api_key}",
-                json={"contents": gemini_messages},
-            )
-            response.raise_for_status()
+    candidate_models: list[str] = []
+    configured_models = getattr(settings, "GEMINI_MODELS", []) or []
+    for model in [*configured_models, getattr(settings, "GEMINI_MODEL", ""), "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]:
+        if model and model not in candidate_models:
+            candidate_models.append(model)
 
-        text = (
-            response.json()
-            .get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-            .strip()
-        )
-        return _parse_ai_response(text, query, "Gemini")
-    except Exception as e:
-        logger.warning("[Gemini] API call failed (invalid API key? quota exceeded? network error?): %s", str(e)[:100])
-        raise VaguenessServiceError(f"Gemini API failed: {str(e)[:50]}") from e
+    candidate_models = candidate_models[:4]
+    last_exc: Exception | None = None
+
+    for model in candidate_models:
+        try:
+            async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["gemini"]) as client:
+                response = await client.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent?key={api_key}",
+                    json={"contents": gemini_messages},
+                )
+                response.raise_for_status()
+
+            text = (
+                response.json()
+                .get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")
+                .strip()
+            )
+            return _parse_ai_response(text, query, "Gemini")
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("[Gemini] model=%s error=%s", model, exc)
+
+    logger.warning("[Gemini] all candidate models failed: %s", str(last_exc)[:120])
+    raise VaguenessServiceError(f"Gemini API failed: {str(last_exc)[:50]}") from last_exc
 
 
 def _dynamic_classification(query: str) -> VaguenessResult:
@@ -442,7 +434,6 @@ def _dynamic_classification(query: str) -> VaguenessResult:
 # ---------------------------------------------------------------------------
 
 _AI_PROVIDERS = [
-    ("Ollama",  _classify_with_ollama),
     ("Groq",    _classify_with_groq),
     ("OpenAI",  _classify_with_openai),
     ("Gemini",  _classify_with_gemini),
@@ -462,7 +453,7 @@ async def classify_vagueness(
     """
     Classify whether a user query is CLEAR, VAGUE, or needs a RETRY.
 
-    Provider chain: Ollama → Groq → OpenAI → Gemini → Dynamic analyser.
+    Provider chain: Groq → OpenAI → Gemini → Dynamic analyser.
 
     When the result is ``Classification.RETRY`` (all providers failed and the
     dynamic analyser also produced nothing), the caller should surface
@@ -510,11 +501,5 @@ async def classify_vagueness(
                 "[%s] unexpected error (%s); trying next provider.", name, exc
             )
 
-    # ── Dynamic analyser (no AI, no hardcoded strings) ────────────────────
-    logger.warning("All AI providers failed; using dynamic classification.")
-    try:
-        return _dynamic_classification(query)
-    except Exception as exc:
-        raise AllProvidersFailedError(
-            f"Every provider failed, including dynamic analyser: {exc}"
-        ) from exc
+    logger.warning("All AI providers failed for vagueness classification.")
+    return VaguenessResult(classification=Classification.RETRY, provider="busy")
