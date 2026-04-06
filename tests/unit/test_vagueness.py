@@ -14,9 +14,13 @@ def test_classify_vagueness_returns_vague_with_followups(monkeypatch):
 
         def json(self):
             return {
-                "message": {
-                    "content": '{"classification": "VAGUE", "follow_ups": ["What is your budget?", "What features do you need?", "Any brand preferences?"]}'
-                }
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"classification": "VAGUE", "follow_ups": ["What is your budget range? Under ₹2,000, ₹2,000–₹5,000, or above ₹5,000?", "What will you mainly use the laptop for? Coding, gaming, editing, or general work?", "Which platform do you prefer? Windows, macOS, or Linux-ready?"]}'
+                        }
+                    }
+                ]
             }
 
     class _FakeClient:
@@ -33,8 +37,9 @@ def test_classify_vagueness_returns_vague_with_followups(monkeypatch):
             return _FakeResponse()
 
     class _FakeSettings:
-        OLLAMA_URL = "http://localhost:11434"
-        OLLAMA_MODEL = "llama3"
+        GROQ_API_KEY = "test-key"
+        GROQ_MODEL = "gpt-oss-120b"
+        GROQ_MODELS = ["gpt-oss-120b"]
 
     monkeypatch.setattr("app.services.vagueness.httpx.AsyncClient", _FakeClient)
     monkeypatch.setattr("app.services.vagueness.get_settings", lambda: _FakeSettings())

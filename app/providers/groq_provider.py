@@ -44,15 +44,19 @@ class GroqProvider(BaseCategoryProvider):
         }
 
         candidate_models = [
+            *(settings.GROQ_MODELS or []),
             settings.GROQ_MODEL,
-            "gpt-oss-120B",
-            "kimi-3.5-pro",
-
+            "gpt-oss-120b",
+            "kimi-k2-instruct",
+            "qwen/qwen3-32b",
+            "llama-3.3-70b-versatile",
         ]
         deduped_models: list[str] = []
         for model in candidate_models:
             if model and model not in deduped_models:
                 deduped_models.append(model)
+
+        deduped_models = deduped_models[:4]
 
         last_error: str | None = None
         for model_name in deduped_models:

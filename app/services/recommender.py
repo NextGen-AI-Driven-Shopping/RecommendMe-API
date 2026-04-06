@@ -10,7 +10,6 @@ from app.providers import (
     CategoryReasoningResult,
     GeminiProvider,
     GroqProvider,
-    OllamaProvider,
     OpenAIProvider,
     ProviderError,
 )
@@ -20,6 +19,9 @@ logger = get_logger(__name__)
 
 class RecommendationServiceError(Exception):
     """Raised when every provider in the fallback chain fails."""
+
+
+BUSY_MESSAGE = "All AI services are currently busy. Please try again in a moment."
 
 
 def _redact_sensitive(text: str) -> str:
@@ -53,12 +55,7 @@ async def generate_category_plan(
     context: list | None = None,
 ) -> CategoryReasoningResult:
     """Generate category reasoning using provider fallback order."""
-    providers: list[BaseCategoryProvider] = [
-        GroqProvider(),
-        OllamaProvider(),
-        OpenAIProvider(),
-        GeminiProvider(),
-    ]
+    providers: list[BaseCategoryProvider] = [GroqProvider(), OpenAIProvider(), GeminiProvider()]
     provider_context = _normalize_context(context)
 
     errors: list[str] = []
@@ -80,4 +77,4 @@ async def generate_category_plan(
 
     joined_errors = " | ".join(errors)
     logger.error("All providers failed for category reasoning. errors=%s", joined_errors)
-    raise RecommendationServiceError("All category reasoning providers failed.")
+    raise RecommendationServiceError(BUSY_MESSAGE)

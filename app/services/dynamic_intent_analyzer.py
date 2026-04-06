@@ -163,9 +163,9 @@ class DynamicFollowUpGenerator:
         if signals['query_length'] < 3:
             nouns = signals['primary_nouns']
             if nouns:
-                questions.append(f"What will you mainly use {nouns[0]} for?")
+                questions.append(f"What will you mainly use {nouns[0]} for? Daily use, work, fitness, or travel?")
             else:
-                questions.append("What type of product are you looking for?")
+                questions.append("What type of product are you looking for? Electronics, outdoor gear, home essentials, or fashion?")
         
         # Priority 1: Use case (if missing and product is clear)
         if missing['use_case'] and signals['primary_nouns']:
@@ -184,9 +184,9 @@ class DynamicFollowUpGenerator:
         
         # Priority 3: Preferences or constraints
         if missing['price'] and not (signals['has_type'] and signals['has_use_case']):
-            questions.append("What's your approximate budget or price range?")
+            questions.append("What is your budget range? Under ₹2,000, ₹2,000–₹5,000, or above ₹5,000?")
         elif missing['timeframe'] and signals['query_length'] <= 4:
-            questions.append("When do you need this by, or what's your timeline?")
+            questions.append("When do you need this? Immediately, within a week, or no strict timeline?")
         elif not missing['price'] and not missing['use_case']:
             # If we have use case and price, ask for one more refinement
             pref_q = DynamicFollowUpGenerator._generate_preference_question(
@@ -198,53 +198,59 @@ class DynamicFollowUpGenerator:
         
         # Keep to requested maximum questions
         max_questions = max(1, min(int(max_questions or 3), 5))
-        return questions[:max_questions]
+        deduped: list[str] = []
+        for question in questions:
+            cleaned = question.strip()
+            if cleaned and cleaned not in deduped:
+                deduped.append(cleaned)
+
+        return deduped[:max_questions]
     
     @staticmethod
     def _generate_use_case_question(product: str) -> str:
         """Generate dynamic use case question based on product."""
         use_case_map = {
-            'laptop': "What will you mainly use it for - coding, gaming, editing, or general work?",
-            'phone': "What's your primary use - photography, gaming, or everyday tasks?",
-            'headphones': "What's your main use - music listening, gaming, work calls, or fitness?",
-            'monitor': "Will you mainly use it for gaming, work, content creation, or general use?",
-            'shoes': "What type of activity will you use these for?",
-            'backpack': "What will you mainly use this backpack for - travel, work, or trekking?",
-            'camera': "What will you primarily photograph - landscapes, portraits, or video?",
+            'laptop': "What will you mainly use it for? Coding, gaming, editing, or general work?",
+            'phone': "What's your primary use? Photography, gaming, content, or everyday tasks?",
+            'headphones': "What's your main use? Music, gaming, work calls, or fitness?",
+            'monitor': "Will you use it for gaming, work, content creation, or mixed use?",
+            'shoes': "What activity are these for? Running, trekking, gym, or daily wear?",
+            'backpack': "What will you use this backpack for? Trekking, travel, work, or school?",
+            'camera': "What will you primarily shoot? Landscapes, portraits, vlogs, or action?",
         }
-        return use_case_map.get(product, f"What will you mainly use the {product} for?")
+        return use_case_map.get(product, f"What will you mainly use the {product} for? Work, travel, home, or outdoor use?")
     
     @staticmethod
     def _generate_type_question(product: Optional[str]) -> str:
         """Generate dynamic type/variant question."""
         type_map = {
-            'headphones': "Do you prefer wired or wireless headphones?",
-            'shoes': "Do you prefer lightweight and minimal, or cushioned and supportive shoes?",
-            'monitor': "What screen size interests you - 24\", 27\", or larger?",
-            'phone': "Do you prefer a compact or larger screen size?",
-            'laptop': "Do you prefer Windows, macOS, or are you flexible on the operating system?",
-            'backpack': "Are you looking for a daypack or a larger travel backpack?",
+            'headphones': "What type do you prefer? Over-ear, on-ear, or in-ear?",
+            'shoes': "What style do you prefer? Lightweight, cushioned, waterproof, or durable?",
+            'monitor': "Which screen size is best for you? 24-inch, 27-inch, or 32-inch+?",
+            'phone': "What size do you prefer? Compact, medium, or large-screen?",
+            'laptop': "Which platform do you prefer? Windows, macOS, or Linux-ready?",
+            'backpack': "What capacity do you prefer? 20–30L, 30–45L, or 45L+?",
         }
         if product:
             return type_map.get(product, f"What specific type or variant of {product} are you looking for?")
-        return "What specific type or variant are you interested in?"
+        return "What type do you prefer? Lightweight, durable, premium, or budget-friendly?"
     
     @staticmethod
     def _generate_preference_question(product: Optional[str], adjectives: list) -> str:
         """Generate dynamic preference question based on query context."""
         if adjectives:
             # User already provided descriptors, ask for confirmation
-            return f"Any specific brands or other features important to you?"
+            return "Any must-have preferences? Brand choice, warranty, eco-friendly build, or premium quality?"
         
         pref_map = {
-            'laptop': "Do you have any preferred brands or specific performance requirements?",
-            'phone': "Any preferred brand or specific camera/display features?",
-            'headphones': "Do you have any brand preference or specific audio quality requirements?",
-            'shoes': "Any preferred brands or specific features like waterproofing?",
+            'laptop': "Which matters more? Battery life, performance, portability, or display quality?",
+            'phone': "What do you value most? Camera quality, battery life, performance, or display?",
+            'headphones': "What's your priority? Noise cancellation, comfort, bass, or call quality?",
+            'shoes': "Which feature matters most? Grip, cushioning, breathability, or waterproofing?",
         }
         
         if product:
             return pref_map.get(product, f"Any specific brands or features you prefer for {product}?")
-        return "Are there any specific brands or features you prefer?"
+        return "Any must-have features? Durability, lightweight design, premium build, or budget value?"
 
 
