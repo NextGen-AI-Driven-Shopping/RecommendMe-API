@@ -38,6 +38,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up RecommendMe API...")
     if not hasattr(app.state, "session_store"):
         app.state.session_store = {}
+    # CRITICAL FIX: Add request deduplication cache
+    if not hasattr(app.state, "request_cache"):
+        app.state.request_cache = {}  # request_id -> (timestamp, result)
     yield
     logger.info("Shutting down RecommendMe API...")
 

@@ -55,9 +55,10 @@ _PROVIDER_TIMEOUT: dict[str, float] = {
     "groq":   8.0,
     "openai": 8.0,
     "gemini": 8.0,
+    "ollama": 8.0,
 }
 
-BUSY_MESSAGE = "All AI services are currently busy. Please try again in a moment."
+BUSY_MESSAGE = "All AI services are currently unavailable. Please try again later."
 
 
 class Classification(str, Enum):
@@ -148,8 +149,8 @@ def _dynamic_follow_ups(query: str) -> list[str]:
     generator = DynamicFollowUpGenerator()
     questions = generator.generate_from_signals(query, signals, missing)
 
-    # Filter blanks, cap at 3
-    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:3]
+    # Filter blanks, cap at 1 to keep strict one-question-at-a-time flow.
+    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:1]
     logger.debug("[Dynamic] generated %d follow-ups for query=%r", len(cleaned), query[:60])
     return cleaned
 
@@ -189,7 +190,7 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
                     or data.get("questions")
                 )
                 if isinstance(raw_qs, list) and raw_qs:
-                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:3]
+                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:1]
                     logger.info(
                         "[%s] VAGUE — %d AI follow-ups", provider, len(follow_ups)
                     )
@@ -396,6 +397,67 @@ async def _classify_with_gemini(
     raise VaguenessServiceError(f"Gemini API failed: {str(last_exc)[:50]}") from last_exc
 
 
+async def _classify_with_ollama(
+    query: str, messages: Messages, settings
+) -> VaguenessResult:
+    """Final fallback — local Ollama with OpenAI-like chat framing."""
+    ollama_url = (getattr(settings, "OLLAMA_URL", "") or "http://localhost:11434").strip()
+    candidate_models: list[str] = []
+    configured_models = getattr(settings, "OLLAMA_MODELS", []) or []
+    for model in [*configured_models, getattr(settings, "OLLAMA_MODEL", ""), "phi3", "phi3:latest", "llama3.2"]:
+        if model and model not in candidate_models:
+            candidate_models.append(model)
+
+    last_exc: Exception | None = None
+    for model_name in candidate_models[:4]:
+        payload = {
+            "model": model_name,
+            "stream": False,
+            "messages": messages,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["ollama"]) as client:
+                response = await client.post(f"{ollama_url.rstrip('/')}/api/chat", json=payload)
+                if response.status_code == 404:
+                    prompt = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+                    response = await client.post(
+                        f"{ollama_url.rstrip('/')}/api/generate",
+                        json={
+                            "model": model_name,
+                            "prompt": prompt,
+                            "stream": False,
+                        },
+                    )
+                response.raise_for_status()
+            payload_json = response.json()
+            text = ((payload_json.get("message", {}) or {}).get("content") or payload_json.get("response") or "").strip()
+            try:
+                return _parse_ai_response(text, query, "Ollama")
+            except VaguenessServiceError:
+                # Some local models return free-form text. Fall back to deterministic
+                # local classification instead of failing the entire request.
+                fallback_result = _dynamic_classification(query)
+                fallback_result.provider = "Ollama+Dynamic"
+                return fallback_result
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("[Ollama] model=%s error=%s", model_name, exc)
+
+    raise VaguenessServiceError(f"Ollama API failed: {str(last_exc)[:80]}") from last_exc
+
+
+async def _with_retries(name: str, provider_fn, query: str, messages: Messages, settings, attempts: int = 2) -> VaguenessResult:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await provider_fn(query, messages, settings)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("[%s] attempt %d/%d failed: %s", name, attempt, attempts, str(exc)[:140])
+    raise VaguenessServiceError(f"{name} failed after {attempts} attempts: {last_exc}")
+
+
 def _dynamic_classification(query: str) -> VaguenessResult:
     """
     Fully offline fallback using DynamicIntentAnalyzer.
@@ -437,6 +499,7 @@ _AI_PROVIDERS = [
     ("Groq",    _classify_with_groq),
     ("OpenAI",  _classify_with_openai),
     ("Gemini",  _classify_with_gemini),
+    ("Ollama",  _classify_with_ollama),
 ]
 
 
@@ -485,7 +548,7 @@ async def classify_vagueness(
     # ── AI providers ──────────────────────────────────────────────────────
     for name, provider_fn in _AI_PROVIDERS:
         try:
-            result = await provider_fn(query, messages, settings)
+            result = await _with_retries(name, provider_fn, query, messages, settings, attempts=2)
             logger.info("classify_vagueness success via %s", name)
             return result
 

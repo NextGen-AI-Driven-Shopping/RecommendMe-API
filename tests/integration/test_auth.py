@@ -45,6 +45,19 @@ def test_signup_and_login_flow(tmp_path: Path, monkeypatch):
     assert login_data["user"]["username"] == "alice01"
 
 
+def test_login_accepts_empty_credentials_in_dev(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    csv_path = tmp_path / "users.csv"
+    auth_service = __import__("app.routes.v1.auth", fromlist=["auth_service"]).auth_service
+    monkeypatch.setattr(auth_service, "csv_path", csv_path)
+    auth_service._ensure_csv_file()
+
+    response = _post("/v1/auth/login", {})
+    assert response.status_code == 200
+    login_data = response.json()
+    assert login_data["user"]["username"] == "dev-user"
+
+
 def test_login_returns_not_found_for_new_user(tmp_path: Path, monkeypatch):
     csv_path = tmp_path / "users.csv"
     auth_service = __import__("app.routes.v1.auth", fromlist=["auth_service"]).auth_service

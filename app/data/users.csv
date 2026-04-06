@@ -1,1 +1,2 @@
 user_id,username,first_name,last_name,email,phone,password_hash,password_salt,created_at
+fb1707b5-feea-4a52-b829-83ae3216faa6,ks,Varun,K S,ksvarun20044@gmail.com,9611581352,ff1cd7d99847c0a0837df6d0b06c3cfab98edd2a0ba2881e37ddc6e2869d7b53,fccfdb330e7894a761065e875665c86c,2026-04-06T12:01:30.658401+00:00

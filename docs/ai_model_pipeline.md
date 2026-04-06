@@ -13,15 +13,16 @@ Fallback tiers:
 1. Groq models (max 4)
 2. OpenAI models (max 4)
 3. Gemini models (max 4)
+4. Ollama local fallback
 
-If all tiers fail, API returns a short busy message.
+If all tiers fail, API returns an unavailable message.
 
 ## Stage 2: Category and Product Planning
 
 Service: `app/services/recommender.py`
 
 - Produces category list, reasoning summary, and planned product candidates.
-- Uses the same tiered LLM fallback sequence.
+- Uses the same tiered LLM fallback sequence with retries.
 
 ## Stage 3: Product Retrieval
 
@@ -32,7 +33,11 @@ Per category:
 - Fetch up to 10 items.
 - Planned items are fetched individually (up to 10).
 - Remaining planned items are fetched with grouped query fallback.
-- If live fetch fails, fallback product cards with search links are returned.
+- Product retrieval source order:
+	- SerpAPI Google Shopping first.
+	- Direct Google fallback only when SerpAPI fails or returns empty.
+- Progressive session snapshots are updated while each category/product is fetched.
+- If no live listings can be built, fallback product cards with search links are returned.
 
 ## Ranking and Labels
 

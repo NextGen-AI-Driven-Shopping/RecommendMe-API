@@ -1,160 +1,139 @@
 # RecommendMe API
 
-FastAPI backend for the RecommendMe MVP.
+FastAPI backend for conversational shopping recommendations.
 
 ## Overview
 
-The API powers guided shopping conversations:
-1. Detect whether a user query is clear or vague.
-2. Ask structured follow-up questions when needed.
-3. Extract categories and product plans with AI.
-4. Fetch live product listings.
-5. Return ranked, category-grouped recommendations.
+The backend supports a full multi-turn recommendation flow:
 
-## Key Features
+1. Validate and sanitize user query input.
+2. Run clarity classification (clear or follow-up needed).
+3. Collect clarification answers (up to 5 total prompts).
+4. Generate category plan using multi-provider AI fallback.
+5. Fetch products primarily from SerpAPI.
+6. Fall back to direct Google fetch only when SerpAPI fails or returns empty.
+7. Persist session snapshots for progressive frontend rendering.
 
-- Tiered AI fallback for reasoning:
-  - Groq (up to 4 models)
-  - OpenAI (up to 4 models)
-  - Gemini (up to 4 models)
-- Clarification flow with max 5 questions (3 + optional 2)
-- CSV-based authentication endpoints for MVP
-- Live product enrichment via SerpAPI
-- Structured response models with Pydantic
+## Core Capabilities
 
-## Tech Stack
-
-- FastAPI
-- Pydantic v2
-- httpx
-- OpenAI SDK
-- Optional Redis health probing
+- AI fallback chain for reasoning:
+  - Groq
+  - OpenAI
+  - Gemini
+  - Ollama (local fallback)
+- Clarification planner with sufficiency scoring.
+- Progressive recommendation snapshots during processing.
+- Session hydration endpoint for frontend polling.
+- CSV-based authentication and JSON-based profile storage.
 
 ## API Endpoints
 
 ### System
 
-- `GET /` - service welcome
-- `GET /health` - lightweight liveness
-- `GET /v1/health` - provider/service status
+- GET /
+- GET /health
+- GET /v1/health
 
-### Core
+### Recommendation Flow
 
-- `POST /v1/query` - clarification/recommendation orchestration
-- `POST /v1/query/sufficiency_check` - clarification sufficiency scoring
+- POST /v1/query
+- POST /v1/query/sufficiency_check
+- GET /v1/sessions/{session_id}
+- GET /v1/sessions/{session_id}/exists
 
-### Authentication (MVP)
+### Auth and Profile
 
-- `POST /v1/auth/signup`
-- `POST /v1/auth/login`
+- POST /v1/auth/signup
+- POST /v1/auth/login
+- POST /v1/auth/forgot-password
+- POST /v1/auth/reset-password
+- GET /v1/auth/me
+- GET /v1/profile
+- POST /v1/profile
+- PUT /v1/profile/update
+- GET /v1/profile/avatars
+- POST /v1/profile/avatar/upload
 
-## Request/Response Contract (Core)
+## Query Contract
 
-`POST /v1/query` request:
+Example request body for POST /v1/query:
 
 ```json
 {
   "session_id": "optional-session-id",
-  "user_message": "Need trekking gear for a 3-day trip",
+  "user_message": "What should I buy for a first-time kitchen setup?",
   "conversation_history": [
-    { "role": "user", "content": "Need trekking gear" }
+    { "role": "user", "content": "What should I buy for a first-time kitchen setup?" }
   ],
   "clarification": [
-    { "question": "What is your budget range?", "answer": "Under ₹5,000" }
+    { "question": "How many people will you cook for?", "answer": "4-5" }
   ]
 }
 ```
 
-Clarification response:
-
-```json
-{
-  "status": "clarification_needed",
-  "questions": [
-    "What will you mainly use it for? Coding, gaming, editing, or general work?"
-  ],
-  "session_id": "..."
-}
-```
-
-Recommendation response:
-
-```json
-{
-  "status": "recommendations",
-  "summary": "Top picks based on your context and budget.",
-  "categories": [
-    {
-      "category": "Trekking Backpack",
-      "tagline": "Top picks for trekking backpack",
-      "why_needed": "Trekking Backpack is essential based on your context, constraints, and intended usage.",
-      "products": []
-    }
-  ],
-  "session_id": "..."
-}
-```
+Recommendation responses use status = recommendations and include summary and categories.
+Clarification responses use status = clarification_needed and include questions.
 
 ## Local Setup
 
-1. Install dependencies:
+1. Install dependencies.
 
 ```bash
 pip install -r Requirements/requirements.txt
 ```
 
-2. Optional dev tooling:
+2. Optional dev dependencies.
 
 ```bash
 pip install -r Requirements/requirements-dev.txt
 ```
 
-3. Run API:
+3. Start API.
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## Environment Variables
 
 Core:
 
-- `APP_ENV`
-- `DEBUG`
-- `CORS_ORIGINS`
-- `USERS_CSV_PATH`
+- APP_ENV
+- DEBUG
+- CORS_ORIGINS
+- USERS_CSV_PATH
+- PROFILE_STORE_PATH
 
-Provider keys:
+Provider/API keys:
 
-- `GROQ_API_KEY`
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
-- `SERPAPI_KEY`
+- GROQ_API_KEY
+- OPENAI_API_KEY
+- GEMINI_API_KEY
+- SERPAPI_KEY
 
-Model selection:
+Model settings:
 
-- `GROQ_MODEL`, `GROQ_MODELS`
-- `OPENAI_MODEL`, `OPENAI_MODELS`
-- `GEMINI_MODEL`, `GEMINI_MODELS`
+- GROQ_MODEL, GROQ_MODELS
+- OPENAI_MODEL, OPENAI_MODELS
+- GEMINI_MODEL, GEMINI_MODELS
+- OLLAMA_URL, OLLAMA_MODEL, OLLAMA_MODELS
 
 Optional:
 
-- `REDIS_URL`
-- `OLLAMA_URL`, `OLLAMA_MODEL` (health/probing compatibility)
+- REDIS_URL
+- AUTH_TOKEN_SECRET
+- AUTH_TOKEN_TTL_MINUTES
 
 ## Tests
 
-Run all backend tests from workspace root:
+Run backend tests from project root:
 
 ```bash
-$env:PYTHONPATH='RecommendMe-API'; python -m pytest -q RecommendMe-API/tests
+pytest -q
 ```
 
-## Project Structure
+## Additional Docs
 
-See:
-
-- `docs/api_architecture.md`
-- `docs/ai_model_pipeline.md`
-- `docs/LOGICAL_FLOW.md`
-- `docs/project_structure.md`
+- docs/api_architecture.md
+- docs/ai_model_pipeline.md
+- docs/project_structure.md

@@ -53,7 +53,11 @@ class DynamicIntentAnalyzer:
         has_environment = any(keyword in query_lower for keyword in env_keywords)
         
         # Extract use case indicators
-        use_case_keywords = ['gaming', 'coding', 'editing', 'photography', 'music', 'work', 'study', 'professional', 'casual', 'fitness', 'exercise']
+        use_case_keywords = [
+            'gaming', 'coding', 'editing', 'photography', 'music', 'work', 'study',
+            'professional', 'casual', 'fitness', 'exercise', 'cooking', 'baking',
+            'frying', 'meal prep', 'home cooking', 'kitchen setup'
+        ]
         has_use_case = any(keyword in query_lower for keyword in use_case_keywords)
         
         # Extract type specificity (wired/wireless, size, brand, etc.)
@@ -65,7 +69,12 @@ class DynamicIntentAnalyzer:
         noun_pattern = r'\b[a-z]{4,}\b'  # Words 4+ chars
         words = re.findall(noun_pattern, query_lower)
         # Filter for likely nouns
-        common_products = ['laptop', 'phone', 'headphones', 'monitor', 'keyboard', 'tablet', 'watch', 'shoes', 'bike', 'camera', 'speaker', 'gear', 'backpack', 'tent', 'lamp', 'chair', 'desk', 'sofa', 'bed', 'table']
+        common_products = [
+            'laptop', 'phone', 'headphones', 'monitor', 'keyboard', 'tablet', 'watch',
+            'shoes', 'bike', 'camera', 'speaker', 'gear', 'backpack', 'tent', 'lamp',
+            'chair', 'desk', 'sofa', 'bed', 'table', 'kitchen', 'cookware', 'utensils',
+            'pan', 'pans', 'pot', 'pots', 'knife', 'knives', 'stove', 'induction', 'mixer'
+        ]
         primary_nouns = [w for w in common_products if w in query_lower]
         
         # Extract adjectives/descriptors

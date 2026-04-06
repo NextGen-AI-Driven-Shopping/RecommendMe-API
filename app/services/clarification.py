@@ -62,7 +62,7 @@ class ClarificationPlanner:
         self._analyzer = DynamicIntentAnalyzer()
         self._generator = DynamicFollowUpGenerator()
 
-    def generate_initial_questions(self, query: str, max_questions: int = 3) -> list[str]:
+    def generate_initial_questions(self, query: str, max_questions: int = 1) -> list[str]:
         signals = self._analyzer.extract_domain_signals(query)
         missing = self._analyzer.determine_missing_info(signals)
         return self._generator.generate_from_signals(
@@ -88,10 +88,15 @@ class ClarificationPlanner:
         score = _coverage_score(signals)
         sufficient_by_score = score >= threshold
 
-        # Require at least min answers unless score is very high.
+        # Stop clarification once the core shopping context is known.
+        has_core_context = bool(signals.get("primary_nouns")) and bool(signals.get("has_use_case")) and bool(signals.get("has_price"))
+        has_decision_context = bool(signals.get("has_type")) or bool(signals.get("has_environment")) or len(pairs) >= 2
+
+        # Require at least min answers unless score is very high or core context is complete.
         answers_count = len(pairs)
         sufficient = (
             (answers_count >= min_answers_before_pass and sufficient_by_score)
+            or (has_core_context and has_decision_context)
             or score >= 0.85
         )
         return sufficient, round(score, 3), missing
@@ -101,7 +106,7 @@ class ClarificationPlanner:
         query: str,
         clarification: list[Any] | None,
         *,
-        max_additional: int = 2,
+        max_additional: int = 1,
     ) -> list[str]:
         pairs = _extract_pairs(clarification)
         asked_questions = {q for q, _ in pairs}
@@ -113,7 +118,7 @@ class ClarificationPlanner:
             query=combined,
             signals=signals,
             missing=missing,
-            max_questions=5,
+            max_questions=1,
         )
 
         additional: list[str] = []
@@ -136,7 +141,7 @@ class ClarificationPlanner:
         asked_count = len(pairs)
 
         if asked_count == 0:
-            initial = self.generate_initial_questions(query, max_questions=min(3, max_total_questions))
+            initial = self.generate_initial_questions(query, max_questions=1)
             return {
                 "sufficient": False,
                 "sufficiency_score": 0.0,
@@ -156,16 +161,16 @@ class ClarificationPlanner:
             }
 
         remaining = max(0, max_total_questions - asked_count)
-        if asked_count >= 3 and remaining > 0:
+        if remaining > 0:
             additional = self.generate_additional_questions(
                 query,
                 clarification,
-                max_additional=min(2, remaining),
+                max_additional=1,
             )
             return {
                 "sufficient": False,
                 "sufficiency_score": score,
-                "round": 2,
+                "round": 2 if asked_count >= 3 else 1,
                 "asked_questions": asked_count,
                 "next_questions": additional,
             }

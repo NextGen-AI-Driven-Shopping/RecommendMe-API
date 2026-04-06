@@ -40,6 +40,11 @@ class QueryRequest(BaseModel):
         None,
         description="Session ID for conversation continuity across requests.",
     )
+    # CRITICAL FIX: Add request_id for deduplication and race condition prevention
+    request_id: Optional[str] = Field(
+        None,
+        description="Unique request ID to prevent duplicate processing and race conditions.",
+    )
     # Full conversation history sent by the frontend for multi-turn context.
     conversation_history: Optional[List[ConversationMessage]] = Field(
         default_factory=list,
@@ -55,6 +60,20 @@ class QueryRequest(BaseModel):
     @field_validator("user_message", mode="before")
     @classmethod
     def strip_user_message(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ChatModeRequest(BaseModel):
+    """Request body for post-results chat mode follow-up."""
+
+    session_id: str = Field(..., min_length=1, max_length=120)
+    user_message: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("session_id", "user_message", mode="before")
+    @classmethod
+    def strip_chat_mode_fields(cls, value: str) -> str:
         if isinstance(value, str):
             return value.strip()
         return value
@@ -83,6 +102,7 @@ class SignupRequest(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=80)
     email: Optional[str] = Field(default=None, max_length=120)
     phone: Optional[str] = Field(default=None, max_length=25)
+    session_id: Optional[str] = Field(default=None, max_length=80)
     password: str = Field(..., min_length=6, max_length=128)
 
     @field_validator("username", "first_name", "last_name", mode="before")
@@ -111,12 +131,65 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     """Request body for POST /v1/auth/login."""
 
-    identifier: str = Field(..., min_length=3, max_length=120)
-    password: str = Field(..., min_length=1, max_length=128)
+    identifier: Optional[str] = Field(default=None, max_length=120)
+    password: Optional[str] = Field(default=None, max_length=128)
+    session_id: Optional[str] = Field(default=None, max_length=80)
 
     @field_validator("identifier", "password", mode="before")
     @classmethod
-    def strip_login_fields(cls, value: str) -> str:
+    def strip_login_fields(cls, value: Optional[str]) -> Optional[str]:
         if isinstance(value, str):
             return value.strip()
+        return value
+
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str = Field(..., min_length=3, max_length=120)
+
+    @field_validator("identifier", mode="before")
+    @classmethod
+    def strip_identifier(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ResetPasswordRequest(BaseModel):
+    reset_token: str = Field(..., min_length=16, max_length=256)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+    @field_validator("reset_token", "new_password", mode="before")
+    @classmethod
+    def strip_reset_fields(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ProfileUpdateRequest(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    gender: Optional[str] = Field(default=None, max_length=20)
+    age: Optional[int] = Field(default=None, ge=13, le=120)
+    interests: Optional[List[str]] = Field(default=None)
+    about: Optional[str] = Field(default=None, max_length=1000)
+    avatar_url: Optional[str] = Field(default=None, max_length=500)
+    avatar_file_path: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("username", "gender", "about", "avatar_url", "avatar_file_path", mode="before")
+    @classmethod
+    def strip_optional_strings(cls, value: Optional[str]) -> Optional[str]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value
+
+    @field_validator("interests", mode="before")
+    @classmethod
+    def clean_interests(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from urllib.parse import unquote, urlparse
+
 import httpx
 
 from app.config.settings import get_settings
@@ -27,14 +30,17 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
     settings = get_settings()
 
     if not settings.SERPAPI_KEY:
-        logger.warning("SERPAPI_KEY not set; product fetch skipped for query=%s", query)
-        return None
+        logger.warning("SERPAPI_KEY not set; falling back to direct Google fetch for query=%s", query)
+        return await _fetch_products_from_google(category=category, query=query)
 
     params = {
         "engine": "google_shopping",
         "q": f"{category} {query}".strip(),
         "api_key": settings.SERPAPI_KEY,
         "num": 10,
+        "gl": "in",
+        "hl": "en",
+        "google_domain": "google.co.in",
     }
 
     try:
@@ -47,7 +53,7 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
                 category,
                 response.text[:300],
             )
-            return None
+            return await _fetch_products_from_google(category=category, query=query)
 
         response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -59,13 +65,13 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
             except Exception:
                 pass
         logger.error("SerpAPI request failed category=%s status=%s body=%s", category, status_code, body)
-        return None
+        return await _fetch_products_from_google(category=category, query=query)
 
     data = response.json()
     items = data.get("shopping_results", [])
     if not isinstance(items, list):
         logger.warning("SerpAPI returned invalid shopping_results format: %s", str(data)[:200])
-        return None
+        return await _fetch_products_from_google(category=category, query=query)
 
     products: list[ProductCard] = []
     for item in items:
@@ -99,7 +105,87 @@ async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
             )
         )
 
+    if products:
+        return products
+
+    logger.warning("SerpAPI returned no product cards; falling back to direct Google fetch.")
+    return await _fetch_products_from_google(category=category, query=query)
+
+
+async def _fetch_products_from_google(category: str, query: str) -> list[ProductCard] | None:
+    """Direct Google fallback used only when SerpAPI fails or returns nothing."""
+    search_query = f"{category} {query}".strip()
+    params = {
+        "q": search_query,
+        "tbm": "shop",
+        "hl": "en",
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        ) as client:
+            response = await client.get("https://www.google.com/search", params=params)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("Direct Google fallback failed category=%s error=%s", category, str(exc)[:200])
+        return None
+
+    html = response.text
+    # Parse encoded redirect links produced by Google search result anchors.
+    matches = re.findall(r'href="/url\?q=([^"&]+)[^"]*"', html)
+
+    products: list[ProductCard] = []
+    seen_urls: set[str] = set()
+    for encoded in matches:
+        if len(products) >= 10:
+            break
+        candidate_url = unquote(encoded)
+        if not candidate_url.startswith("http"):
+            continue
+        if "google.com" in urlparse(candidate_url).netloc:
+            continue
+        if candidate_url in seen_urls:
+            continue
+        seen_urls.add(candidate_url)
+
+        domain = urlparse(candidate_url).netloc.replace("www.", "")
+        title = _title_from_url(candidate_url)
+
+        products.append(
+            ProductCard(
+                title=title,
+                price=None,
+                url=candidate_url,
+                image_url=None,
+                source=domain or "Google",
+                rating=None,
+                reviews=None,
+                explanation="Fetched from direct Google fallback because SerpAPI was unavailable.",
+            )
+        )
+
     return products or None
+
+
+def _title_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    slug = parsed.path.strip("/").split("/")[-1]
+    if not slug:
+        return parsed.netloc.replace("www.", "") or "Product result"
+
+    slug = slug.replace("-", " ").replace("_", " ")
+    slug = re.sub(r"\s+", " ", slug).strip()
+    if not slug:
+        return parsed.netloc.replace("www.", "") or "Product result"
+    return slug[:80].title()
 
 
 def inject_affiliate_tag(url: str, tag: str) -> str:

@@ -6,7 +6,8 @@ RecommendMe-API/
 |   |-- config/
 |   |-- core/
 |   |-- data/
-|   |   `-- users.csv
+|   |   |-- users.csv
+|   |   `-- profiles.json
 |   |-- models/
 |   |-- prompts/
 |   |-- providers/
@@ -31,5 +32,7 @@ RecommendMe-API/
 ## Notes
 
 - `routes/v1/query.py` is the orchestration entrypoint.
-- `services/` contains domain logic (auth, vagueness, recommendation, products).
-- `providers/` encapsulates LLM-specific API calls.
+- `routes/v1/sessions.py` exposes hydratable session snapshots for frontend polling.
+- `routes/v1/auth.py` and `routes/v1/profile.py` handle auth/profile APIs.
+- `services/` contains domain logic (auth, vagueness, recommendation, products, profile persistence).
+- `providers/` encapsulates LLM-specific API calls and fallback compatibility.

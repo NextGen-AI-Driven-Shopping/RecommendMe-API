@@ -115,6 +115,7 @@ class AuthSignupResponse(BaseModel):
     message: str
     token: str
     user: AuthUser
+    session_id: Optional[str] = None
 
 
 class AuthLoginResponse(BaseModel):
@@ -123,3 +124,75 @@ class AuthLoginResponse(BaseModel):
     message: str
     token: str
     user: AuthUser
+    session_id: Optional[str] = None
+    profile: Optional[dict] = None
+
+
+class ChatMessageState(BaseModel):
+    """Serialized message stored in a backend session snapshot."""
+
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    type: Optional[Literal["followup", "recommendations", "text"]] = None
+    questions: Optional[List[str]] = None
+    summary: Optional[str] = None
+    categories: Optional[List[CategoryResult]] = None
+    timestamp: str
+
+
+class ChatSessionState(BaseModel):
+    """Chat session snapshot returned to the frontend for hydration."""
+
+    session_id: str
+    status: Literal["new", "clarification_needed", "recommendations"] = "new"
+    title: str = "New Chat"
+    user_id: Optional[str] = None
+    messages: List[ChatMessageState] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    original_query: Optional[str] = None
+    pending_questions: Optional[List[str]] = None
+    current_question_index: Optional[int] = None
+    clarification_answers: Optional[List[dict]] = None
+    latest_response: Optional[QueryResponse] = None
+
+
+class AvatarOption(BaseModel):
+    id: str
+    gender: str
+    url: str
+
+
+class UserProfile(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    gender: str = "Other"
+    age: Optional[int] = None
+    interests: List[str] = Field(default_factory=list)
+    about: str = ""
+    avatar_url: str
+    avatar_file_path: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ProfileResponse(BaseModel):
+    profile: UserProfile
+
+
+class AvatarOptionsResponse(BaseModel):
+    avatars: List[AvatarOption]
+
+
+class PasswordResetResponse(BaseModel):
+    message: str
+    reset_token: Optional[str] = None
+
+
+class ChatModeResponse(BaseModel):
+    """Response body for POST /v1/chat/mode."""
+
+    session_id: str
+    message: str

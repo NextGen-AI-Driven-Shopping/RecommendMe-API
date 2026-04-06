@@ -10,6 +10,7 @@ from app.providers import (
     CategoryReasoningResult,
     GeminiProvider,
     GroqProvider,
+    OllamaProvider,
     OpenAIProvider,
     ProviderError,
 )
@@ -21,7 +22,7 @@ class RecommendationServiceError(Exception):
     """Raised when every provider in the fallback chain fails."""
 
 
-BUSY_MESSAGE = "All AI services are currently busy. Please try again in a moment."
+BUSY_MESSAGE = "All AI services are currently unavailable. Please try again later."
 
 
 def _redact_sensitive(text: str) -> str:
@@ -55,25 +56,34 @@ async def generate_category_plan(
     context: list | None = None,
 ) -> CategoryReasoningResult:
     """Generate category reasoning using provider fallback order."""
-    providers: list[BaseCategoryProvider] = [GroqProvider(), OpenAIProvider(), GeminiProvider()]
+    providers: list[BaseCategoryProvider] = [GroqProvider(), OpenAIProvider(), GeminiProvider(), OllamaProvider()]
     provider_context = _normalize_context(context)
 
     errors: list[str] = []
     for provider in providers:
-        try:
-            result = await provider.generate(query=query, context=provider_context)
-            logger.info(
-                "Category plan generated provider=%s categories=%d products=%d",
-                provider.provider_name,
-                len(result.categories),
-                len(result.recommended_products),
-            )
-            return result
-        except ProviderError as exc:
-            error_text = _redact_sensitive(str(exc))
-            logger.warning("Provider failed provider=%s error=%s", provider.provider_name, error_text)
-            errors.append(f"{provider.provider_name}: {error_text}")
-            continue
+        last_error: str | None = None
+        for attempt in range(1, 3):
+            try:
+                result = await provider.generate(query=query, context=provider_context)
+                logger.info(
+                    "Category plan generated provider=%s categories=%d products=%d",
+                    provider.provider_name,
+                    len(result.categories),
+                    len(result.recommended_products),
+                )
+                return result
+            except ProviderError as exc:
+                last_error = _redact_sensitive(str(exc))
+                logger.warning(
+                    "Provider failed provider=%s attempt=%d/2 error=%s",
+                    provider.provider_name,
+                    attempt,
+                    last_error,
+                )
+                continue
+
+        if last_error is not None:
+            errors.append(f"{provider.provider_name}: {last_error}")
 
     joined_errors = " | ".join(errors)
     logger.error("All providers failed for category reasoning. errors=%s", joined_errors)

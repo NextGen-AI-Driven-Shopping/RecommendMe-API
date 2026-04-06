@@ -246,3 +246,110 @@ class CsvAuthService:
             raise AuthCredentialsError("Invalid password.")
 
         return found_user.to_public_user()
+
+    def get_or_create_dev_user(self, *, identifier: Optional[str] = None) -> AuthUser:
+        """Return a reusable development user when auth validation is intentionally relaxed."""
+        fallback_email = "dev@recommendme.local"
+        fallback_phone = "+910000000000"
+        chosen_identifier = (identifier or "").strip()
+
+        with _FILE_LOCK:
+            users = self._read_users()
+
+            if chosen_identifier:
+                email_match = chosen_identifier.lower()
+                phone_match = self._normalize_phone(chosen_identifier)
+                for existing in users:
+                    if self._looks_like_email(chosen_identifier):
+                        if existing.email.lower() == email_match:
+                            return existing.to_public_user()
+                    else:
+                        if existing.phone == phone_match:
+                            return existing.to_public_user()
+
+            for existing in users:
+                if existing.email.lower() == fallback_email or existing.phone == fallback_phone:
+                    return existing.to_public_user()
+
+            salt = self._new_salt()
+            password_hash = self._hash_password("recommendme-dev", salt)
+            stored = _StoredUser(
+                user_id=str(uuid.uuid4()),
+                username="dev-user",
+                first_name="Dev",
+                last_name="User",
+                email=fallback_email,
+                phone=fallback_phone,
+                password_hash=password_hash,
+                password_salt=salt,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._append_user(stored)
+
+        return stored.to_public_user()
+
+    def find_user_by_identifier(self, identifier: str) -> Optional[AuthUser]:
+        identifier = identifier.strip()
+        if not identifier:
+            return None
+
+        with _FILE_LOCK:
+            users = self._read_users()
+
+        email_match = identifier.lower()
+        phone_match = self._normalize_phone(identifier)
+        for user in users:
+            if self._looks_like_email(identifier):
+                if user.email.lower() == email_match:
+                    return user.to_public_user()
+            elif user.phone == phone_match:
+                return user.to_public_user()
+        return None
+
+    def update_password(self, *, user_id: str, new_password: str) -> None:
+        if len(new_password) < 6:
+            raise AuthValidationError("Password must be at least 6 characters.")
+
+        with _FILE_LOCK:
+            users = self._read_users()
+            salt = self._new_salt()
+            password_hash = self._hash_password(new_password, salt)
+
+            updated_rows = []
+            updated = False
+            for user in users:
+                if user.user_id == user_id:
+                    user.password_salt = salt
+                    user.password_hash = password_hash
+                    updated = True
+                updated_rows.append(user)
+
+            if not updated:
+                raise AuthNotFoundError("No account found for this user.")
+
+            with self.csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=self.headers)
+                writer.writeheader()
+                for user in updated_rows:
+                    writer.writerow(
+                        {
+                            "user_id": user.user_id,
+                            "username": user.username,
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "email": user.email,
+                            "phone": user.phone,
+                            "password_hash": user.password_hash,
+                            "password_salt": user.password_salt,
+                            "created_at": user.created_at,
+                        }
+                    )
+
+    def get_user_by_id(self, user_id: str) -> Optional[AuthUser]:
+        with _FILE_LOCK:
+            users = self._read_users()
+
+        for user in users:
+            if user.user_id == user_id:
+                return user.to_public_user()
+        return None
