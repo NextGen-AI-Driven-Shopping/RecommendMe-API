@@ -54,6 +54,7 @@ def _normalize_context(context: list | None) -> list[dict[str, str]]:
 async def generate_category_plan(
     query: str,
     context: list | None = None,
+    domain_hint: str | None = None,
 ) -> CategoryReasoningResult:
     """Generate category reasoning using provider fallback order."""
     providers: list[BaseCategoryProvider] = [GroqProvider(), OpenAIProvider(), GeminiProvider(), OllamaProvider()]
@@ -64,7 +65,11 @@ async def generate_category_plan(
         last_error: str | None = None
         for attempt in range(1, 3):
             try:
-                result = await provider.generate(query=query, context=provider_context)
+                result = await provider.generate(
+                    query=query,
+                    context=provider_context,
+                    domain_hint=domain_hint,
+                )
                 logger.info(
                     "Category plan generated provider=%s categories=%d products=%d",
                     provider.provider_name,

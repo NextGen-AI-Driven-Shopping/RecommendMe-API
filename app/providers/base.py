@@ -33,6 +33,10 @@ class CategoryReasoningResult(BaseModel):
     categories: list[str]
     reasoning: str
     recommended_products: list[RecommendedProductInfo]
+    # Optional domain/intent fields added by the new domain-agnostic prompt.
+    # Providers that return them will populate these; legacy responses leave them None.
+    domain: str | None = None
+    intent: str | None = None
 
     @field_validator("categories")
     @classmethod
@@ -70,8 +74,9 @@ class BaseCategoryProvider(ABC):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
-        """Generate categories, reasoning, and recommended product names."""
+        """Generate categories, reasoning, and recommended items (domain-agnostic)."""
 
 
 def parse_provider_payload(payload: Any) -> CategoryReasoningResult:

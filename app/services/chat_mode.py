@@ -46,44 +46,115 @@ def _parse_price_to_number(price_text: str) -> float | None:
         return None
 
 
+def _detect_domain(products: list[dict[str, str]]) -> str:
+    """Infer the domain from the product categories in the session context."""
+    categories_text = " ".join(p.get("category", "").lower() for p in products)
+    if any(kw in categories_text for kw in ["movie", "film", "show", "series", "book", "game", "music", "stream", "watch"]):
+        return "entertainment"
+    if any(kw in categories_text for kw in ["tool", "app", "software", "platform", "saas", "crm", "ide", "plugin"]):
+        return "software"
+    if any(kw in categories_text for kw in ["trip", "destination", "hotel", "flight", "travel", "tour", "trek", "hike"]):
+        return "travel"
+    if any(kw in categories_text for kw in ["recipe", "dish", "meal", "food", "ingredient", "cook", "restaurant"]):
+        return "food"
+    return "shopping"
+
+
 def _heuristic_chat_answer(question: str, products: list[dict[str, str]]) -> str:
     if not products:
         return "I do not have recommendation results in this session yet. Please run a product query first."
 
     question_lc = question.lower()
     q_tokens = _tokenize(question_lc)
+    domain = _detect_domain(products)
 
-    if any(term in question_lc for term in ["waterproof", "water resistant", "rain", "wet"]):
-        matches = [
-            product
-            for product in products
-            if any(term in f"{product['title']} {product['reason']}".lower() for term in ["waterproof", "water resistant", "rain"])
-        ]
-        if matches:
-            top = matches[0]
+    # ── Domain-specific heuristics ────────────────────────────────────────────
+
+    if domain == "entertainment":
+        if any(t in question_lc for t in ["mood", "feel", "tone", "vibe"]):
+            top = products[0]
             return (
-                f"Based on the current recommendations, \"{top['title']}\" in {top['category']} looks waterproof-friendly. "
-                f"Why: {top['reason'] or 'its listing highlights weather protection.'}"
+                f"Based on your preferences, \"{top['title']}\" fits well. "
+                f"{top['reason'] or 'It matches the tone and style you described.'}"
+            )
+        if any(t in question_lc for t in ["platform", "stream", "watch on", "available on"]):
+            matches = [p for p in products if any(s in f"{p['title']} {p['reason']}".lower() for s in ["netflix", "prime", "hulu", "disney", "hotstar", "youtube"])]
+            if matches:
+                return f"\"{matches[0]['title']}\" should be available on a streaming platform. {matches[0]['reason'] or ''}"
+            return "I don't have streaming platform details in the current results — check the link for availability."
+        if any(t in question_lc for t in ["short", "long", "runtime", "quick", "episode"]):
+            top = products[0]
+            return f"From current picks, \"{top['title']}\" is a solid choice. {top['reason'] or 'Check runtime on the listing page.'}"
+
+    elif domain == "software":
+        if any(t in question_lc for t in ["free", "cost", "price", "cheap", "affordable", "open source"]):
+            priced = [(p, _parse_price_to_number(p["price"])) for p in products]
+            priced = [(p, pr) for p, pr in priced if pr is not None]
+            if priced:
+                cheapest, _ = sorted(priced, key=lambda x: x[1])[0]
+                return f"The most affordable option appears to be \"{cheapest['title']}\" at {cheapest['price']}. {cheapest['reason'] or ''}"
+            free_candidates = [p for p in products if "free" in f"{p['title']} {p['reason']}".lower()]
+            if free_candidates:
+                return f"\"{free_candidates[0]['title']}\" may have a free tier. Check the listing for details."
+        if any(t in question_lc for t in ["integrate", "integration", "api", "connect", "compatible"]):
+            top = products[0]
+            return f"\"{top['title']}\" likely supports integrations — {top['reason'] or 'check the docs for compatibility details.'}"
+        if any(t in question_lc for t in ["best", "top", "recommended"]):
+            labeled = [p for p in products if p["label"].lower().startswith("best")]
+            choice = labeled[0] if labeled else products[0]
+            return f"A strong choice is \"{choice['title']}\". {choice['reason'] or 'It ranked highest for your use case.'}"
+
+    elif domain == "travel":
+        if any(t in question_lc for t in ["budget", "cheap", "affordable", "cost", "price"]):
+            priced = [(p, _parse_price_to_number(p["price"])) for p in products]
+            priced = [(p, pr) for p, pr in priced if pr is not None]
+            if priced:
+                cheapest, _ = sorted(priced, key=lambda x: x[1])[0]
+                return f"A budget-friendly option is \"{cheapest['title']}\" at {cheapest['price']}. {cheapest['reason'] or ''}"
+        if any(t in question_lc for t in ["solo", "alone", "group", "family", "couple"]):
+            top = products[0]
+            return f"\"{top['title']}\" works well for your group type. {top['reason'] or 'It accommodates various traveler profiles.'}"
+        if any(t in question_lc for t in ["best", "top", "recommend"]):
+            top = products[0]
+            return f"A top pick is \"{top['title']}\". {top['reason'] or 'Highly rated for your destination type.'}"
+
+    elif domain == "food":
+        if any(t in question_lc for t in ["quick", "fast", "easy", "simple", "30 minute", "15 minute"]):
+            top = products[0]
+            return f"For a quick option, try \"{top['title']}\". {top['reason'] or 'It is simple and takes minimal prep time.'}"
+        if any(t in question_lc for t in ["vegetarian", "vegan", "gluten", "dairy", "allergy", "diet"]):
+            matches = [p for p in products if any(kw in f"{p['title']} {p['reason']}".lower() for kw in ["vegetarian", "vegan", "gluten-free", "dairy-free"])]
+            if matches:
+                return f"\"{matches[0]['title']}\" fits dietary preferences. {matches[0]['reason'] or ''}"
+
+    else:
+        # Shopping domain — original logic preserved
+        if any(t in question_lc for t in ["waterproof", "water resistant", "rain", "wet"]):
+            matches = [p for p in products if any(t in f"{p['title']} {p['reason']}".lower() for t in ["waterproof", "water resistant", "rain"])]
+            if matches:
+                top = matches[0]
+                return (
+                    f"Based on the current recommendations, \"{top['title']}\" in {top['category']} looks waterproof-friendly. "
+                    f"Why: {top['reason'] or 'its listing highlights weather protection.'}"
+                )
+        if any(t in question_lc for t in ["cheap", "budget", "affordable", "lowest price", "cheapest"]):
+            priced = [(p, _parse_price_to_number(p["price"])) for p in products]
+            priced = [(p, pr) for p, pr in priced if pr is not None]
+            if priced:
+                cheapest, _ = sorted(priced, key=lambda x: x[1])[0]
+                return (
+                    f"The most budget-friendly option appears to be \"{cheapest['title']}\" in {cheapest['category']} "
+                    f"at about {cheapest['price'] or 'an available listed price'}."
+                )
+        if any(t in question_lc for t in ["best", "top", "highest"]):
+            labeled = [p for p in products if p["label"].lower().startswith("best")]
+            choice = labeled[0] if labeled else products[0]
+            return (
+                f"A strong top pick is \"{choice['title']}\" in {choice['category']}. "
+                f"Reason: {choice['reason'] or 'it is ranked highly for your use case.'}"
             )
 
-    if any(term in question_lc for term in ["cheap", "budget", "affordable", "lowest price", "cheapest"]):
-        priced = [(product, _parse_price_to_number(product["price"])) for product in products]
-        priced = [(product, price) for product, price in priced if price is not None]
-        if priced:
-            cheapest, _ = sorted(priced, key=lambda item: item[1])[0]
-            return (
-                f"The most budget-friendly option appears to be \"{cheapest['title']}\" in {cheapest['category']} "
-                f"at about {cheapest['price'] or 'an available listed price'}."
-            )
-
-    if any(term in question_lc for term in ["best", "top", "highest"]):
-        labeled = [product for product in products if product["label"].lower().startswith("best")]
-        choice = labeled[0] if labeled else products[0]
-        return (
-            f"A strong top pick is \"{choice['title']}\" in {choice['category']}. "
-            f"Reason: {choice['reason'] or 'it is ranked highly for your use case.'}"
-        )
-
+    # ── General token-matching fallback (all domains) ─────────────────────────
     scored: list[tuple[int, dict[str, str]]] = []
     for product in products:
         text = f"{product['title']} {product['reason']} {product['category']}".lower()
@@ -101,10 +172,19 @@ def _heuristic_chat_answer(question: str, products: list[dict[str, str]]) -> str
         return "Here are the most relevant options from your current results:\n" + "\n".join(lines)
 
     first = products[0]
+    domain_tips = {
+        "entertainment": "genre, mood, runtime, or platform",
+        "software": "pricing, integrations, team size, or use case",
+        "travel": "budget, group size, duration, or destination type",
+        "food": "diet, prep time, cuisine, or ingredients",
+        "shopping": "waterproofing, budget, weight, durability, or comfort",
+    }
+    tip = domain_tips.get(domain, "specific requirements")
     return (
         f"From the current results, start with \"{first['title']}\" in {first['category']}. "
-        "If you want, ask about waterproofing, budget, weight, durability, or comfort and I will narrow it down."
+        f"If you want, ask about {tip} and I will narrow it down."
     )
+
 
 
 def _build_llm_prompt(question: str, products: list[dict[str, str]], profile_context: dict[str, Any] | None) -> str:

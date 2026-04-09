@@ -220,6 +220,19 @@
     "user_id": "584ea6bf-6b93-4c9d-90f4-422b0ff06d74",
     "username": "alice01"
   },
+  "58a794a4-2917-48d4-bcd0-171036fcae00": {
+    "about": "",
+    "age": null,
+    "avatar_file_path": null,
+    "avatar_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=512&q=80",
+    "created_at": "2026-04-09T12:46:40.444857+00:00",
+    "email": "bob@example.com",
+    "gender": "Other",
+    "interests": [],
+    "updated_at": "2026-04-09T12:46:40.444857+00:00",
+    "user_id": "58a794a4-2917-48d4-bcd0-171036fcae00",
+    "username": "bob01"
+  },
   "5acf8495-dd8e-4fb3-b1d5-c56269ae3303": {
     "about": "",
     "age": null,
@@ -376,6 +389,19 @@
     "user_id": "b8972db4-b3e0-4002-b308-7f335f0eba5f",
     "username": "bob01"
   },
+  "b9553401-4469-40be-ae95-921f5cbad59c": {
+    "about": "",
+    "age": null,
+    "avatar_file_path": null,
+    "avatar_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=512&q=80",
+    "created_at": "2026-04-09T12:46:39.975217+00:00",
+    "email": "alice@example.com",
+    "gender": "Other",
+    "interests": [],
+    "updated_at": "2026-04-09T12:46:39.975217+00:00",
+    "user_id": "b9553401-4469-40be-ae95-921f5cbad59c",
+    "username": "alice01"
+  },
   "cbf5172a-5d62-4f7c-9ae5-dfd96c9772a7": {
     "about": "",
     "age": null,
@@ -518,5 +544,18 @@
     "updated_at": "2026-04-06T12:22:40.261388+00:00",
     "user_id": "ff3dbcb3-213b-47e9-8988-d884f8e3cf1c",
     "username": "bob01"
+  },
+  "fff10f49-7096-4442-bbda-afa40d28152c": {
+    "about": "",
+    "age": null,
+    "avatar_file_path": null,
+    "avatar_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=512&q=80",
+    "created_at": "2026-04-09T12:46:40.240247+00:00",
+    "email": "dev@recommendme.local",
+    "gender": "Other",
+    "interests": [],
+    "updated_at": "2026-04-09T12:46:40.240247+00:00",
+    "user_id": "fff10f49-7096-4442-bbda-afa40d28152c",
+    "username": "dev-user"
   }
 }

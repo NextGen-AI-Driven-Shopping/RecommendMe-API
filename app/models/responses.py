@@ -4,7 +4,7 @@ Response models for the RecommendMe API.
 Defines the shape of every outbound JSON response served by the API.
 """
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -68,6 +68,33 @@ class QueryResponse(BaseModel):
     sufficiency_score: Optional[float] = Field(
         None,
         description="Confidence score in [0,1] indicating whether user intent is sufficiently specified.",
+    )
+    domain: Optional[str] = Field(
+        None,
+        description="Detected domain: 'shopping', 'entertainment', 'software', 'travel', 'food', 'services', 'general'.",
+    )
+    intent: Optional[str] = Field(
+        None,
+        description="Detected intent: 'recommendation', 'comparison', 'exploration'.",
+    )
+    # ── Data-source transparency fields ───────────────────────────────────────
+    # The frontend MUST use these to decide what UI elements to render.
+    #
+    # data_source values:
+    #   "live"        → SerpAPI returned real products; show price + Buy Now.
+    #   "llm_only"    → Products are LLM ideas only; hide price & Buy Now;
+    #                   label section "Ideas only (no live data)".
+    #   "unavailable" → All sources failed; categories=[]; show error banner.
+    data_source: Optional[Literal["live", "llm_only", "unavailable"]] = Field(
+        None,
+        description=(
+            "Indicates the origin of product data. "
+            "'live'=real listings, 'llm_only'=ideas only, 'unavailable'=all sources failed."
+        ),
+    )
+    degraded: Optional[bool] = Field(
+        None,
+        description="True when the response is partial or sourced from fallback/LLM only.",
     )
 
 

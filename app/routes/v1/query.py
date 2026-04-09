@@ -14,6 +14,7 @@ from app.core.logger import get_logger
 from app.models.requests import QueryRequest, SufficiencyCheckRequest
 from app.models.responses import CategoryResult, ProductCard, QueryResponse, SufficiencyCheckResponse
 from app.services.clarification import ClarificationPlanner
+from app.services.intent_engine import classify_intent
 from app.services.products import fetch_products
 from app.services.recommender import RecommendationServiceError, generate_category_plan
 from app.services.vagueness import VaguenessResult, VaguenessServiceError, classify_vagueness
@@ -136,72 +137,81 @@ async def _build_category_products(
     category: str,
     query: str,
     product_plan: list,
+    api_calls_counter: list[int],
     on_progress: Callable[[list[ProductCard]], None] | None = None,
 ) -> list[ProductCard]:
+    """
+    Fetch products for a single category using ONE batched API call.
+
+    Instead of calling fetch_products() once per planned item (which causes
+    N_categories × N_items calls), we build a single combined query string
+    and extract all the results from one response.  This respects the
+    per-request MAX_API_CALLS budget tracked via api_calls_counter[0].
+
+    No fake ProductCard stubs are created when live data is unavailable.
+    The caller receives an empty list and decides what to show the user.
+
+    Args:
+        category:          Category label from the AI plan.
+        query:             Original user query for context.
+        product_plan:      List of planned product items from the AI.
+        api_calls_counter: Single-element list used as a mutable int counter
+                           shared across all category iterations.
+        on_progress:       Optional callback fired after each successful fetch.
+
+    Returns:
+        List of ProductCard objects (may be empty — never fake).
+    """
+    from app.services.system_state import MAX_API_CALLS
+
     cards: list[ProductCard] = []
 
-    individual_plan = product_plan[:MAX_PRODUCTS_PER_CATEGORY]
-    for planned in individual_plan:
-        try:
-            fetched = await fetch_products(category=category, query=planned.name)
-        except Exception:
-            continue
-        if not fetched:
-            continue
-        card = fetched[0]
-        card.explanation = planned.explanation
-        card.label = _rank_label(len(cards) + 1, planned.label)
-        cards.append(card)
+    # Budget check — abort before making the call if we are already over limit
+    if api_calls_counter[0] >= MAX_API_CALLS:
+        logger.warning(
+            "API call budget exhausted (used=%d max=%d) — skipping category=%s",
+            api_calls_counter[0],
+            MAX_API_CALLS,
+            category,
+        )
+        return cards
+
+    # Build one combined query from all planned item names rather than
+    # making a separate call per item.
+    if product_plan:
+        combined_names = " ".join(p.name for p in product_plan[:5])
+        batch_query = f"{combined_names} {query}".strip()
+    else:
+        batch_query = query
+
+    try:
+        api_calls_counter[0] += 1
+        fetched = await fetch_products(category=category, query=batch_query)
+    except Exception as exc:
+        logger.error(
+            "fetch_products raised during batch call category=%s error=%s",
+            category,
+            str(exc)[:200],
+        )
+        fetched = None
+
+    if not fetched:
+        return cards
+
+    # Distribute fetched results across the planned slots, applying labels
+    # and explanations from the plan where available.
+    plan_map = {p.name.lower(): p for p in product_plan}
+
+    for fetched_card in fetched[:MAX_PRODUCTS_PER_CATEGORY]:
+        plan_item = plan_map.get(fetched_card.title.lower())
+        if plan_item:
+            fetched_card.explanation = plan_item.explanation
+            fetched_card.label = _rank_label(len(cards) + 1, plan_item.label)
+        else:
+            fetched_card.label = _rank_label(len(cards) + 1)
+        cards.append(fetched_card)
         if on_progress is not None:
             on_progress(cards)
-        if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-            return cards
-
-    if len(product_plan) > MAX_PRODUCTS_PER_CATEGORY and len(cards) < MAX_PRODUCTS_PER_CATEGORY:
-        grouped_query = ", ".join(p.name for p in product_plan[MAX_PRODUCTS_PER_CATEGORY:])
-        grouped = await fetch_products(category=category, query=grouped_query)
-        for fetched_card in grouped or []:
-            if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                break
-            fetched_card.label = _rank_label(len(cards) + 1)
-            cards.append(fetched_card)
-            if on_progress is not None:
-                on_progress(cards)
-
-    if not cards:
-        category_fallback, broad_fallback = await asyncio.gather(
-            fetch_products(category=category, query=query),
-            fetch_products(category="", query=query),
-            return_exceptions=True,
-        )
-        fallback_lists: list[list[ProductCard]] = []
-        for result in (category_fallback, broad_fallback):
-            if isinstance(result, Exception) or not result:
-                continue
-            fallback_lists.append(result)
-
-        for fallback_list in fallback_lists:
-            for fallback_card in fallback_list:
-                if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                    break
-                fallback_card.label = _rank_label(len(cards) + 1)
-                cards.append(fallback_card)
-                if on_progress is not None:
-                    on_progress(cards)
-            if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                break
-
-    if not cards and product_plan:
-        for planned in product_plan[:3]:
-            card = ProductCard(
-                title=planned.name,
-                url=f"https://www.google.com/search?q={planned.name.replace(' ', '+')}",
-                explanation="Live listings unavailable. Search Google for alternatives.",
-                label=_rank_label(len(cards) + 1, planned.label),
-            )
-            cards.append(card)
-            if on_progress is not None:
-                on_progress(cards)
 
     return cards
 
@@ -256,6 +266,15 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
         len(conversation),
     )
 
+    # ── Intent engine (fast, local, no AI call) ────────────────────────────
+    intent_result = classify_intent(clean_query)
+    domain_hint = intent_result.domain
+    detected_intent = intent_result.intent
+    logger.info(
+        "Intent detected session_id=%s domain=%s intent=%s confidence=%.2f",
+        session_id, domain_hint, detected_intent, intent_result.confidence,
+    )
+
     if payload.clarification:
         plan = clarification_planner.plan_next_step(
             clean_query,
@@ -263,17 +282,22 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             max_total_questions=MAX_TOTAL_QUESTIONS,
         )
         asked_questions = plan["asked_questions"]
-        next_question = plan["next_questions"][0] if plan["next_questions"] else None
+        next_questions = plan["next_questions"] if plan["next_questions"] else []
 
-        if not plan["sufficient"] and next_question:
+        if not plan["sufficient"] and next_questions:
+            # Return ONLY the first of the next questions (one at a time flow)
+            first_next_question_only = [next_questions[0]]
+            
             response = build_clarification_response(
-                message_or_follow_ups=[next_question],
+                message_or_follow_ups=first_next_question_only,
                 session_id=session_id,
                 clarification_round=plan["round"],
                 asked_questions=asked_questions,
                 max_total_questions=MAX_TOTAL_QUESTIONS,
                 sufficiency_score=plan["sufficiency_score"],
             )
+            response.domain = domain_hint
+            response.intent = detected_intent
             _store_session_snapshot(
                 session_id,
                 {
@@ -284,16 +308,18 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                     + [
                         _serialize_message(
                             role="assistant",
-                            content=next_question,
+                            content=next_questions[0],  # Show first question
                             message_type="followup",
-                            questions=[next_question],
+                            questions=first_next_question_only,  # ONLY first question in array
                         )
                     ],
                     "original_query": clean_query,
-                    "pending_questions": [next_question],
-                    "current_question_index": 0,
+                    "pending_questions": next_questions,  # Store ALL remaining questions
+                    "current_question_index": 0,  # Reset for next batch
                     "clarification_answers": serialized_clarification_answers,
                     "latest_response": response.model_dump(),
+                    "domain": domain_hint,
+                    "intent": detected_intent,
                 },
             )
             return response
@@ -306,7 +332,9 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
         logger.info("Bypassing vagueness check due to sufficient clarifications.")
     else:
         try:
-            vagueness_result = await classify_vagueness(clean_query, allow_fallback=True)
+            vagueness_result = await classify_vagueness(
+                clean_query, allow_fallback=True, domain_hint=domain_hint
+            )
         except VaguenessServiceError as exc:
             logger.error("Vagueness classification failed session_id=%s error=%s", session_id, exc)
             raise AIServiceException(detail=BUSY_MESSAGE) from exc
@@ -320,6 +348,8 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             max_total_questions=MAX_TOTAL_QUESTIONS,
             sufficiency_score=0.0,
         )
+        response.domain = domain_hint
+        response.intent = detected_intent
         retry_text = vagueness_result.retry_message or "I couldn't process that request right now. Please try again."
         _store_session_snapshot(
             session_id,
@@ -341,6 +371,8 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                 "current_question_index": 0,
                 "clarification_answers": serialized_clarification_answers,
                 "latest_response": response.model_dump(),
+                "domain": domain_hint,
+                "intent": detected_intent,
             },
         )
         return response
@@ -348,19 +380,24 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
     if vagueness_result.classification == "VAGUE":
         follow_ups = vagueness_result.follow_ups or clarification_planner.generate_initial_questions(
             clean_query,
-            max_questions=1,
+            max_questions=3,
         )
-        next_question = follow_ups[0] if follow_ups else None
-        if not next_question:
+        if not follow_ups:
             raise AIServiceException(detail=BUSY_MESSAGE)
+        
+        # Return ONLY the first question (one at a time flow)
+        first_question_only = [follow_ups[0]]
+        
         response = build_clarification_response(
-            message_or_follow_ups=[next_question],
+            message_or_follow_ups=first_question_only,
             session_id=session_id,
             clarification_round=1,
             asked_questions=0,
             max_total_questions=MAX_TOTAL_QUESTIONS,
             sufficiency_score=0.0,
         )
+        response.domain = domain_hint
+        response.intent = detected_intent
         _store_session_snapshot(
             session_id,
             {
@@ -371,22 +408,26 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                 + [
                     _serialize_message(
                         role="assistant",
-                            content=next_question,
+                        content=follow_ups[0],
                         message_type="followup",
-                            questions=[next_question],
+                        questions=first_question_only,  # ONLY first question, not all
                     )
                 ],
                 "original_query": clean_query,
-                    "pending_questions": [next_question],
-                "current_question_index": 0,
+                "pending_questions": follow_ups,  # Store ALL pending questions
+                "current_question_index": 0,  # Track which question we're on
                 "clarification_answers": [],
                 "latest_response": response.model_dump(),
+                "domain": domain_hint,
+                "intent": detected_intent,
             },
         )
         return response
 
     try:
-        category_plan = await generate_category_plan(clean_query, context=conversation)
+        category_plan = await generate_category_plan(
+            clean_query, context=conversation, domain_hint=domain_hint
+        )
     except RecommendationServiceError as exc:
         logger.error("Category orchestration failed session_id=%s error=%s", session_id, exc)
         raise AIServiceException(detail=BUSY_MESSAGE) from exc
@@ -423,11 +464,25 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             },
         )
 
+    # Shared mutable counter — tracks total fetch_products() calls this request
+    api_calls_counter: list[int] = [0]
+
     for category_name in categories:
+        # Build a concise, AI-grounded why_needed from the plan's reasoning.
+        # The plan reasoning explains the overall context; we attribute it per category
+        # so each card has meaningful copy rather than a generic placeholder.
+        plan_reasoning_snippet = (category_plan.reasoning or "").strip()
+        if plan_reasoning_snippet and len(plan_reasoning_snippet) > 20:
+            # Trim to a sentence or two for the per-category body
+            sentences = [s.strip() for s in plan_reasoning_snippet.split(".") if s.strip()]
+            why_text = ". ".join(sentences[:2]) + "." if sentences else plan_reasoning_snippet
+        else:
+            why_text = f"Recommended based on your query and context — {category_name} covers what matters most for your needs."
+
         category_result = CategoryResult(
             category=category_name,
-            tagline=f"Top picks for {category_name.lower()}",
-            why_needed=f"{category_name} is essential based on your context, constraints, and intended usage.",
+            tagline=f"Best {category_name.lower()} picks",
+            why_needed=why_text,
             products=[],
         )
         category_results.append(category_result)
@@ -444,11 +499,15 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                 category=category_name,
                 query=clean_query,
                 product_plan=category_plan.recommended_products,
+                api_calls_counter=api_calls_counter,
                 on_progress=_on_product_progress,
             )
 
             if not product_cards:
-                logger.warning("No live products for category=%s session_id=%s", category_name, session_id)
+                logger.warning(
+                    "No live products for category=%s session_id=%s api_calls=%d",
+                    category_name, session_id, api_calls_counter[0],
+                )
                 category_results.pop()
                 _persist_recommendation_progress("Continuing with the next category...")
                 continue
@@ -456,28 +515,71 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             category_results[category_index].products = product_cards
             _persist_recommendation_progress(f"Completed {category_name}.")
         except Exception as e:
-            # CRITICAL FIX: Handle individual category failures gracefully
-            # Instead of failing the entire request, skip the category and continue
             logger.error(
                 "Failed to fetch products for category=%s session_id=%s error=%s",
-                category_name, session_id, str(e)
+                category_name, session_id, str(e),
             )
             category_results.pop()
-            _persist_recommendation_progress(f"Skipped {category_name} due to temporary issues. Continuing...")
+            _persist_recommendation_progress(
+                f"Skipped {category_name} due to temporary issues. Continuing..."
+            )
             continue
 
-    if not category_results:
-        raise AIServiceException(
-            detail="No live product listings could be fetched from SerpAPI. "
-            "Please verify your SERPAPI_KEY or try again later. "
-            "If the error persists, we may be temporarily unavailable."
+    # ── Pre-return validation: determine data_source truthfully ──────────────────
+    all_items = [card for cat in category_results for card in cat.products]
+    if not category_results or not all_items:
+        # Every data source failed — return a transparent degraded response
+        # BUT include AI-generated categories with explanations per Flow.md failover
+        # instead of raising an exception that looks like a server error.
+        logger.warning(
+            "All categories failed — returning degraded response session_id=%s",
+            session_id,
         )
+        
+        # Build category results from plan even without products (explanation fallback)
+        fallback_categories = []
+        if category_plan and category_plan.categories:
+            for cat_plan in category_plan.categories[:5]:
+                fallback_cat = CategoryResult(
+                    category=cat_plan.name,
+                    tagline=cat_plan.tagline,
+                    why_needed=cat_plan.explanation,
+                    products=[],  # Empty products, but show explanation
+                )
+                fallback_categories.append(fallback_cat)
+        
+        degraded_response = QueryResponse(
+            status="recommendations",
+            session_id=session_id,
+            summary=(
+                "Live product listings are temporarily unavailable. "
+                "The AI summary above describes what to look for."
+            ),
+            categories=fallback_categories,  # Return AI categories even without products
+            data_source="unavailable",
+            degraded=True,
+            domain=domain_hint,
+            intent=detected_intent,
+        )
+        return degraded_response
+
+    all_prices_none = all(card.price is None for card in all_items)
+    if all_prices_none:
+        data_source_value: str = "llm_only"
+        is_degraded = True
+    else:
+        data_source_value = "live"
+        is_degraded = False
 
     response = build_recommendation_response(
         categories=category_results,
         session_id=session_id,
         summary=category_plan.reasoning,
     )
+    response.domain = domain_hint
+    response.intent = detected_intent
+    response.data_source = data_source_value   # type: ignore[assignment]
+    response.degraded = is_degraded
     _store_session_snapshot(
         session_id,
         {
