@@ -29,10 +29,11 @@ class OllamaProvider(BaseCategoryProvider):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         ollama_url = (settings.OLLAMA_URL or "http://localhost:11434").rstrip("/")
-        messages = build_category_reasoning_messages(query=query, context=context)
+        messages = build_category_reasoning_messages(query=query, context=context, domain_hint=domain_hint)
 
         candidate_models: list[str] = []
         for model_name in [

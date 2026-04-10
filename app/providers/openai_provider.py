@@ -29,6 +29,7 @@ class OpenAIProvider(BaseCategoryProvider):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         if not settings.OPENAI_API_KEY:
@@ -55,7 +56,7 @@ class OpenAIProvider(BaseCategoryProvider):
                 completion = await client.chat.completions.create(
                     model=model,
                     temperature=0.2,
-                    messages=build_category_reasoning_messages(query=query, context=context),
+                    messages=build_category_reasoning_messages(query=query, context=context, domain_hint=domain_hint),
                 )
                 break
             except Exception as exc:

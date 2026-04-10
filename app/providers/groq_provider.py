@@ -31,12 +31,13 @@ class GroqProvider(BaseCategoryProvider):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         if not settings.GROQ_API_KEY:
             raise ProviderUnavailableError("GROQ_API_KEY is not configured")
 
-        messages = build_category_reasoning_messages(query=query, context=context)
+        messages = build_category_reasoning_messages(query=query, context=context, domain_hint=domain_hint)
 
         headers = {
             "Authorization": f"Bearer {settings.GROQ_API_KEY}",

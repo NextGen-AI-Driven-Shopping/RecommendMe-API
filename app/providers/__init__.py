@@ -3,6 +3,7 @@
 from app.providers.base import (
     BaseCategoryProvider,
     CategoryReasoningResult,
+    ProductTypeInfo,
     ProviderError,
     ProviderResponseError,
     ProviderUnavailableError,
@@ -15,6 +16,7 @@ from app.providers.openai_provider import OpenAIProvider
 __all__ = [
     "BaseCategoryProvider",
     "CategoryReasoningResult",
+    "ProductTypeInfo",
     "ProviderError",
     "ProviderResponseError",
     "ProviderUnavailableError",

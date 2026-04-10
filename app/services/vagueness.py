@@ -59,6 +59,7 @@ _PROVIDER_TIMEOUT: dict[str, float] = {
 }
 
 BUSY_MESSAGE = "All AI services are currently unavailable. Please try again later."
+INITIAL_FOLLOW_UP_LIMIT = 3
 
 
 class Classification(str, Enum):
@@ -149,8 +150,8 @@ def _dynamic_follow_ups(query: str) -> list[str]:
     generator = DynamicFollowUpGenerator()
     questions = generator.generate_from_signals(query, signals, missing)
 
-    # Filter blanks, cap at 1 to keep strict one-question-at-a-time flow.
-    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:1]
+    # Keep up to 3 questions so the first clarification round is complete.
+    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:INITIAL_FOLLOW_UP_LIMIT]
     logger.debug("[Dynamic] generated %d follow-ups for query=%r", len(cleaned), query[:60])
     return cleaned
 
@@ -190,7 +191,8 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
                     or data.get("questions")
                 )
                 if isinstance(raw_qs, list) and raw_qs:
-                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:1]
+                    # Preserve multiple AI follow-ups; UI can ask them sequentially.
+                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:INITIAL_FOLLOW_UP_LIMIT]
                     logger.info(
                         "[%s] VAGUE — %d AI follow-ups", provider, len(follow_ups)
                     )
@@ -512,6 +514,7 @@ async def classify_vagueness(
     query: str,
     *,
     allow_fallback: bool = True,
+    domain_hint: str | None = None,
 ) -> VaguenessResult:
     """
     Classify whether a user query is CLEAR, VAGUE, or needs a RETRY.
@@ -528,6 +531,8 @@ async def classify_vagueness(
         allow_fallback: Try next provider on failure when ``True``.
                         Raises :class:`VaguenessServiceError` immediately
                         on first failure when ``False``.
+        domain_hint:    Optional domain pre-detected by intent_engine.
+                        Passed to the prompt so the AI adapts questions.
 
     Returns:
         :class:`VaguenessResult`.
@@ -543,7 +548,7 @@ async def classify_vagueness(
 
     query    = query.strip()
     settings = get_settings()
-    messages = build_vagueness_prompt(query)
+    messages = build_vagueness_prompt(query, domain_hint=domain_hint)
 
     # ── AI providers ──────────────────────────────────────────────────────
     for name, provider_fn in _AI_PROVIDERS:

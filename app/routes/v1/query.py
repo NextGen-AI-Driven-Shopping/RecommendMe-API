@@ -12,8 +12,9 @@ from fastapi import APIRouter
 from app.core.exceptions import AIServiceException, ValidationException
 from app.core.logger import get_logger
 from app.models.requests import QueryRequest, SufficiencyCheckRequest
-from app.models.responses import CategoryResult, ProductCard, QueryResponse, SufficiencyCheckResponse
+from app.models.responses import ProductCard, ProductTypeResult, QueryResponse, SufficiencyCheckResponse
 from app.services.clarification import ClarificationPlanner
+from app.services.intent_engine import classify_intent
 from app.services.products import fetch_products
 from app.services.recommender import RecommendationServiceError, generate_category_plan
 from app.services.vagueness import VaguenessResult, VaguenessServiceError, classify_vagueness
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 clarification_planner = ClarificationPlanner()
 MAX_TOTAL_QUESTIONS = 5
-MAX_PRODUCTS_PER_CATEGORY = 10
+MAX_PRODUCTS_PER_TYPE = 10
 BUSY_MESSAGE = "All AI services are currently unavailable. Please try again later."
 
 
@@ -62,14 +63,6 @@ def _store_session_snapshot(session_id: str, snapshot: dict) -> None:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
-
-
-def _rank_label(index: int, existing_label: str | None = None) -> str:
-    if existing_label and existing_label.strip():
-        return existing_label.strip()
-    if index == 1:
-        return "Best Choice"
-    return f"Top {index}"
 
 
 def _with_recommendation_message(
@@ -131,79 +124,100 @@ def _serialize_clarification_answers(answers) -> list[dict]:
     return normalized
 
 
-async def _build_category_products(
+async def _fetch_product_type_items(
     *,
-    category: str,
+    product_type: str,
+    description: str,
     query: str,
-    product_plan: list,
-    on_progress: Callable[[list[ProductCard]], None] | None = None,
-) -> list[ProductCard]:
-    cards: list[ProductCard] = []
+    context_signals: str,
+    api_calls_counter: list[int],
+) -> ProductTypeResult:
+    """
+    Fetch SERP products for a single product type.
 
-    individual_plan = product_plan[:MAX_PRODUCTS_PER_CATEGORY]
-    for planned in individual_plan:
-        try:
-            fetched = await fetch_products(category=category, query=planned.name)
-        except Exception:
-            continue
-        if not fetched:
-            continue
-        card = fetched[0]
-        card.explanation = planned.explanation
-        card.label = _rank_label(len(cards) + 1, planned.label)
-        cards.append(card)
-        if on_progress is not None:
-            on_progress(cards)
-        if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-            return cards
+    Flow.md §6:
+    - Query = Product Type + optional context signals (region, price range).
+    - One SERP call per Product Type. No batching.
+    - Return up to 10 items per Product Type.
+    - Retry once per Product Type. If second attempt fails, fall back immediately.
+    - Never block rendering — return ProductTypeResult with empty product_items on failure.
+    """
+    from app.services.system_state import MAX_API_CALLS
 
-    if len(product_plan) > MAX_PRODUCTS_PER_CATEGORY and len(cards) < MAX_PRODUCTS_PER_CATEGORY:
-        grouped_query = ", ".join(p.name for p in product_plan[MAX_PRODUCTS_PER_CATEGORY:])
-        grouped = await fetch_products(category=category, query=grouped_query)
-        for fetched_card in grouped or []:
-            if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                break
-            fetched_card.label = _rank_label(len(cards) + 1)
-            cards.append(fetched_card)
-            if on_progress is not None:
-                on_progress(cards)
+    serp_query = f"{product_type} {context_signals}".strip() if context_signals else product_type
 
-    if not cards:
-        category_fallback, broad_fallback = await asyncio.gather(
-            fetch_products(category=category, query=query),
-            fetch_products(category="", query=query),
-            return_exceptions=True,
+    # Budget check
+    if api_calls_counter[0] >= MAX_API_CALLS:
+        logger.warning(
+            "[RecommendMe] SERP fetch skipped — budget exhausted product_type=%r", product_type
         )
-        fallback_lists: list[list[ProductCard]] = []
-        for result in (category_fallback, broad_fallback):
-            if isinstance(result, Exception) or not result:
-                continue
-            fallback_lists.append(result)
+        return ProductTypeResult(
+            product_type=product_type,
+            description=description,
+            product_items=[],
+            serp_failed=True,
+        )
 
-        for fallback_list in fallback_lists:
-            for fallback_card in fallback_list:
-                if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                    break
-                fallback_card.label = _rank_label(len(cards) + 1)
-                cards.append(fallback_card)
-                if on_progress is not None:
-                    on_progress(cards)
-            if len(cards) >= MAX_PRODUCTS_PER_CATEGORY:
-                break
+    api_calls_counter[0] += 1
 
-    if not cards and product_plan:
-        for planned in product_plan[:3]:
-            card = ProductCard(
-                title=planned.name,
-                url=f"https://www.google.com/search?q={planned.name.replace(' ', '+')}",
-                explanation="Live listings unavailable. Search Google for alternatives.",
-                label=_rank_label(len(cards) + 1, planned.label),
+    # Attempt 1
+    fetched = None
+    try:
+        fetched = await fetch_products(category=product_type, query=serp_query)
+    except Exception as exc:
+        logger.error(
+            "[RecommendMe] SERP fetch failed — Product Type: %r\nReason: %s\nAttempt: 1 of 2\nFallback: Displaying AI-generated recommendation only.",
+            product_type,
+            str(exc)[:200],
+        )
+
+    # Attempt 2 (retry once per Flow.md §261)
+    if not fetched:
+        try:
+            fetched = await fetch_products(category=product_type, query=serp_query)
+        except Exception as exc:
+            logger.error(
+                "[RecommendMe] SERP fetch failed — Product Type: %r\nReason: %s\nAttempt: 2 of 2\nFallback: Displaying AI-generated recommendation only.",
+                product_type,
+                str(exc)[:200],
             )
-            cards.append(card)
-            if on_progress is not None:
-                on_progress(cards)
 
-    return cards
+    if not fetched:
+        logger.warning(
+            "[RecommendMe] SERP returned no products — Product Type: %r. Showing AI-generated recommendation only.",
+            product_type,
+        )
+        return ProductTypeResult(
+            product_type=product_type,
+            description=description,
+            product_items=[],
+            serp_failed=True,
+        )
+
+    items = fetched[:MAX_PRODUCTS_PER_TYPE]
+    logger.info(
+        "[RecommendMe] SERP success — Product Type: %r  items: %d",
+        product_type,
+        len(items),
+    )
+    return ProductTypeResult(
+        product_type=product_type,
+        description=description,
+        product_items=items,
+        serp_failed=False,
+    )
+
+
+def _extract_context_signals(query: str, clarification_answers: list[dict]) -> str:
+    """Build a short context signal string from clarification answers (region, price range, etc.)."""
+    signals: list[str] = []
+    for pair in clarification_answers:
+        answer = str(pair.get("answer", "")).strip()
+        if answer:
+            signals.append(answer)
+    # Keep signal string short — just enough to enrich the SERP query
+    combined = " ".join(signals[:3])
+    return combined[:120]
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -214,10 +228,6 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
         raise ValidationException(detail=reason)
 
     request_id = payload.request_id or str(uuid.uuid4())
-    
-    # Get the app state from globals (hack, but works for deduplication)
-    # Check if we need access to app state - we'll need to pass it through
-    # For now, log the request_id for backend tracking
     logger.info("Processing request request_id=%s", request_id)
 
     session_id = payload.session_id or str(uuid.uuid4())
@@ -256,6 +266,15 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
         len(conversation),
     )
 
+    # ── Intent engine (fast, local, no AI call) ────────────────────────────
+    intent_result = classify_intent(clean_query)
+    domain_hint = intent_result.domain
+    detected_intent = intent_result.intent
+    logger.info(
+        "Intent detected session_id=%s domain=%s intent=%s confidence=%.2f",
+        session_id, domain_hint, detected_intent, intent_result.confidence,
+    )
+
     if payload.clarification:
         plan = clarification_planner.plan_next_step(
             clean_query,
@@ -263,17 +282,22 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             max_total_questions=MAX_TOTAL_QUESTIONS,
         )
         asked_questions = plan["asked_questions"]
-        next_question = plan["next_questions"][0] if plan["next_questions"] else None
+        next_questions = plan["next_questions"] if plan["next_questions"] else []
 
-        if not plan["sufficient"] and next_question:
+        if not plan["sufficient"] and next_questions:
+            # Return ONLY the first of the next questions (one at a time flow)
+            first_next_question_only = [next_questions[0]]
+
             response = build_clarification_response(
-                message_or_follow_ups=[next_question],
+                message_or_follow_ups=first_next_question_only,
                 session_id=session_id,
                 clarification_round=plan["round"],
                 asked_questions=asked_questions,
                 max_total_questions=MAX_TOTAL_QUESTIONS,
                 sufficiency_score=plan["sufficiency_score"],
             )
+            response.domain = domain_hint
+            response.intent = detected_intent
             _store_session_snapshot(
                 session_id,
                 {
@@ -284,16 +308,18 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                     + [
                         _serialize_message(
                             role="assistant",
-                            content=next_question,
+                            content=next_questions[0],
                             message_type="followup",
-                            questions=[next_question],
+                            questions=first_next_question_only,
                         )
                     ],
                     "original_query": clean_query,
-                    "pending_questions": [next_question],
+                    "pending_questions": next_questions,
                     "current_question_index": 0,
                     "clarification_answers": serialized_clarification_answers,
                     "latest_response": response.model_dump(),
+                    "domain": domain_hint,
+                    "intent": detected_intent,
                 },
             )
             return response
@@ -306,7 +332,9 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
         logger.info("Bypassing vagueness check due to sufficient clarifications.")
     else:
         try:
-            vagueness_result = await classify_vagueness(clean_query, allow_fallback=True)
+            vagueness_result = await classify_vagueness(
+                clean_query, allow_fallback=True, domain_hint=domain_hint
+            )
         except VaguenessServiceError as exc:
             logger.error("Vagueness classification failed session_id=%s error=%s", session_id, exc)
             raise AIServiceException(detail=BUSY_MESSAGE) from exc
@@ -320,6 +348,8 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
             max_total_questions=MAX_TOTAL_QUESTIONS,
             sufficiency_score=0.0,
         )
+        response.domain = domain_hint
+        response.intent = detected_intent
         retry_text = vagueness_result.retry_message or "I couldn't process that request right now. Please try again."
         _store_session_snapshot(
             session_id,
@@ -341,6 +371,8 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                 "current_question_index": 0,
                 "clarification_answers": serialized_clarification_answers,
                 "latest_response": response.model_dump(),
+                "domain": domain_hint,
+                "intent": detected_intent,
             },
         )
         return response
@@ -348,19 +380,24 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
     if vagueness_result.classification == "VAGUE":
         follow_ups = vagueness_result.follow_ups or clarification_planner.generate_initial_questions(
             clean_query,
-            max_questions=1,
+            max_questions=3,
         )
-        next_question = follow_ups[0] if follow_ups else None
-        if not next_question:
+        if not follow_ups:
             raise AIServiceException(detail=BUSY_MESSAGE)
+
+        # Return ONLY the first question (one at a time flow)
+        first_question_only = [follow_ups[0]]
+
         response = build_clarification_response(
-            message_or_follow_ups=[next_question],
+            message_or_follow_ups=first_question_only,
             session_id=session_id,
             clarification_round=1,
             asked_questions=0,
             max_total_questions=MAX_TOTAL_QUESTIONS,
             sufficiency_score=0.0,
         )
+        response.domain = domain_hint
+        response.intent = detected_intent
         _store_session_snapshot(
             session_id,
             {
@@ -371,35 +408,49 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                 + [
                     _serialize_message(
                         role="assistant",
-                            content=next_question,
+                        content=follow_ups[0],
                         message_type="followup",
-                            questions=[next_question],
+                        questions=first_question_only,
                     )
                 ],
                 "original_query": clean_query,
-                    "pending_questions": [next_question],
+                "pending_questions": follow_ups,
                 "current_question_index": 0,
                 "clarification_answers": [],
                 "latest_response": response.model_dump(),
+                "domain": domain_hint,
+                "intent": detected_intent,
             },
         )
         return response
 
+    # ── Step 5: AI generates category + product types ───────────────────────
     try:
-        category_plan = await generate_category_plan(clean_query, context=conversation)
+        category_plan = await generate_category_plan(
+            clean_query, context=conversation, domain_hint=domain_hint
+        )
     except RecommendationServiceError as exc:
         logger.error("Category orchestration failed session_id=%s error=%s", session_id, exc)
         raise AIServiceException(detail=BUSY_MESSAGE) from exc
 
-    category_results: list[CategoryResult] = []
-    categories = category_plan.categories[:5] if category_plan.categories else ["Recommended Products"]
+    category_label = category_plan.category
+    product_type_infos = category_plan.product_types[:10]  # Flow.md: max 10
 
-    def _persist_recommendation_progress(summary_text: str) -> None:
-        categories_payload = [category.model_dump() for category in category_results]
+    # Build context signals from clarification answers for SERP enrichment
+    context_signals = _extract_context_signals(clean_query, serialized_clarification_answers)
+
+    # ── Step 6: Per-product-type SERP calls ──────────────────────────────────
+    # Flow.md: One SERP call per Product Type. Retry once. Never block rendering.
+    product_type_results: list[ProductTypeResult] = []
+    api_calls_counter: list[int] = [0]
+
+    def _persist_progress(summary_text: str) -> None:
+        categories_payload = [r.model_dump() for r in product_type_results]
         partial_response = build_recommendation_response(
-            categories=category_results,
+            product_types=product_type_results,
             session_id=session_id,
             summary=summary_text,
+            category=category_label,
         )
         _store_session_snapshot(
             session_id,
@@ -412,72 +463,91 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                     summary=summary_text,
                     categories_payload=categories_payload,
                 ),
-                "original_query": clean_query,
+                "original_query": existing_session.get("original_query") or clean_query,
                 "pending_questions": None,
                 "current_question_index": None,
                 "clarification_answers": serialized_clarification_answers,
                 "latest_response": partial_response.model_dump(),
+                # Store full structure for chat mode context (Flow.md §8)
+                "session_category": category_label,
+                "product_types": categories_payload,
                 "categories": categories_payload,
                 "reasoning": category_plan.reasoning,
-                "recommended_products": [p.name for p in category_plan.recommended_products],
             },
         )
 
-    for category_name in categories:
-        category_result = CategoryResult(
-            category=category_name,
-            tagline=f"Top picks for {category_name.lower()}",
-            why_needed=f"{category_name} is essential based on your context, constraints, and intended usage.",
-            products=[],
+    for pt_info in product_type_infos:
+        _persist_progress(f"Searching for {pt_info.product_type}…")
+        result = await _fetch_product_type_items(
+            product_type=pt_info.product_type,
+            description=pt_info.description,
+            query=clean_query,
+            context_signals=context_signals,
+            api_calls_counter=api_calls_counter,
         )
-        category_results.append(category_result)
-        _persist_recommendation_progress(f"Working on {category_name}...")
-
-        category_index = len(category_results) - 1
-
-        def _on_product_progress(cards: list[ProductCard]) -> None:
-            category_results[category_index].products = list(cards)
-            _persist_recommendation_progress(f"Working on {category_name}...")
-
-        try:
-            product_cards = await _build_category_products(
-                category=category_name,
-                query=clean_query,
-                product_plan=category_plan.recommended_products,
-                on_progress=_on_product_progress,
-            )
-
-            if not product_cards:
-                logger.warning("No live products for category=%s session_id=%s", category_name, session_id)
-                category_results.pop()
-                _persist_recommendation_progress("Continuing with the next category...")
-                continue
-
-            category_results[category_index].products = product_cards
-            _persist_recommendation_progress(f"Completed {category_name}.")
-        except Exception as e:
-            # CRITICAL FIX: Handle individual category failures gracefully
-            # Instead of failing the entire request, skip the category and continue
-            logger.error(
-                "Failed to fetch products for category=%s session_id=%s error=%s",
-                category_name, session_id, str(e)
-            )
-            category_results.pop()
-            _persist_recommendation_progress(f"Skipped {category_name} due to temporary issues. Continuing...")
-            continue
-
-    if not category_results:
-        raise AIServiceException(
-            detail="No live product listings could be fetched from SerpAPI. "
-            "Please verify your SERPAPI_KEY or try again later. "
-            "If the error persists, we may be temporarily unavailable."
+        product_type_results.append(result)
+        _persist_progress(
+            f"Found {len(result.product_items)} items for {pt_info.product_type}."
+            if not result.serp_failed
+            else f"Live data unavailable for {pt_info.product_type} — showing AI recommendation."
         )
+
+    # ── Build final response ─────────────────────────────────────────────────
+    all_items = [card for pt in product_type_results for card in pt.product_items]
+    all_serp_failed = all(pt.serp_failed for pt in product_type_results)
+
+    if not product_type_results:
+        # No product types at all — full degraded response
+        logger.warning("All product types failed session_id=%s", session_id)
+        fallback_types = [
+            ProductTypeResult(
+                product_type=pt.product_type,
+                description=pt.description,
+                product_items=[],
+                serp_failed=True,
+            )
+            for pt in product_type_infos
+        ]
+        degraded_response = QueryResponse(
+            status="recommendations",
+            session_id=session_id,
+            summary=(
+                "Live product listings are temporarily unavailable. "
+                "The AI summary above describes what to look for."
+            ),
+            category=category_label,
+            product_types=fallback_types,
+            categories=fallback_types,
+            data_source="unavailable",
+            degraded=True,
+            domain=domain_hint,
+            intent=detected_intent,
+        )
+        return degraded_response
+
+    all_prices_none = all(card.price is None for card in all_items) if all_items else True
+    if all_serp_failed or (all_prices_none and not all_items):
+        data_source_value = "llm_only"
+        is_degraded = True
+    elif all_prices_none:
+        data_source_value = "llm_only"
+        is_degraded = True
+    else:
+        data_source_value = "live"
+        is_degraded = False
 
     response = build_recommendation_response(
-        categories=category_results,
+        product_types=product_type_results,
         session_id=session_id,
         summary=category_plan.reasoning,
+        category=category_label,
     )
+    response.domain = domain_hint
+    response.intent = detected_intent
+    response.data_source = data_source_value   # type: ignore[assignment]
+    response.degraded = is_degraded
+
+    categories_payload = [r.model_dump() for r in product_type_results]
     _store_session_snapshot(
         session_id,
         {
@@ -491,36 +561,32 @@ async def handle_query(payload: QueryRequest) -> QueryResponse:
                     content=category_plan.reasoning,
                     message_type="recommendations",
                     summary=category_plan.reasoning,
-                    categories=[category.model_dump() for category in category_results],
+                    categories=categories_payload,
                 )
             ],
-            "original_query": clean_query,
+            "original_query": existing_session.get("original_query") or clean_query,
             "pending_questions": None,
             "current_question_index": None,
             "clarification_answers": serialized_clarification_answers,
             "latest_response": response.model_dump(),
-            "categories": [category.model_dump() for category in category_results],
+            # Full context for chat mode (Flow.md §8)
+            "session_category": category_label,
+            "product_types": categories_payload,
+            "categories": categories_payload,
             "reasoning": category_plan.reasoning,
-            "recommended_products": [p.name for p in category_plan.recommended_products],
         },
     )
 
-    logger.info(
-        "Returning recommendations session_id=%s categories=%d",
-        session_id,
-        len(category_results),
-    )
-    
-    # CRITICAL FIX: Log request metrics for debugging and monitoring
-    total_products = sum(len(cat.products) for cat in category_results) if category_results else 0
+    total_products = sum(len(pt.product_items) for pt in product_type_results)
     logger.info(
         "REQUEST_METRICS request_id=%s session_id=%s "
-        "categories=%d products=%d products_per_category=%.1f status=success",
+        "category=%r product_types=%d products=%d data_source=%s status=success",
         request_id,
         session_id,
-        len(category_results),
+        category_label,
+        len(product_type_results),
         total_products,
-        total_products / len(category_results) if category_results else 0
+        data_source_value,
     )
     return response
 

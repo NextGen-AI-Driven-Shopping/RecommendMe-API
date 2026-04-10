@@ -9,21 +9,23 @@ Public API:
   build_clarification_response()   — wraps a follow-up question in a QueryResponse.
 """
 
-from app.models.responses import CategoryResult, ProductCard, QueryResponse
+from app.models.responses import ProductTypeResult, ProductCard, QueryResponse
 
 
 def build_recommendation_response(
-    categories: list[CategoryResult],
+    product_types: list[ProductTypeResult],
     session_id: str | None = None,
     summary: str | None = None,
+    category: str | None = None,
 ) -> QueryResponse:
     """
     Assemble a successful recommendations response.
 
     Args:
-        categories: Ranked product results grouped by category.
-        session_id: Active session ID, if any.
-        summary: AI reasoning text shown to the user above the product list.
+        product_types: Product type results each with description + SERP items.
+        session_id:    Active session ID, if any.
+        summary:       AI reasoning text shown to the user above the product list.
+        category:      Single session-level display label (Flow.md §21).
 
     Returns:
         QueryResponse with status='recommendations'.
@@ -31,7 +33,10 @@ def build_recommendation_response(
     return QueryResponse(
         status="recommendations",
         summary=summary,
-        categories=categories,
+        category=category,
+        product_types=product_types,
+        # Populate categories alias so old frontend normalizer still works
+        categories=product_types,
         session_id=session_id,
     )
 
