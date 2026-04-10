@@ -33,13 +33,25 @@ async def chat_mode_followup(payload: ChatModeRequest) -> ChatModeResponse:
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    categories_payload = session.get("categories")
+    # Prefer the new product_types key; fall back to categories (legacy)
+    categories_payload = (
+        session.get("product_types")
+        or session.get("categories")
+    )
     if not categories_payload:
         latest_response = session.get("latest_response") or {}
-        categories_payload = latest_response.get("categories")
+        categories_payload = (
+            latest_response.get("product_types")
+            or latest_response.get("categories")
+        )
 
     if not categories_payload:
         raise HTTPException(status_code=400, detail="No recommendation context found for this session.")
+
+    # ── Full context aggregation (Flow.md §8) ─────────────────────────────────
+    original_query = session.get("original_query")
+    clarification_answers = session.get("clarification_answers") or []
+    session_category = session.get("session_category")
 
     profile_context = None
     user_id = session.get("user_id")
@@ -52,6 +64,9 @@ async def chat_mode_followup(payload: ChatModeRequest) -> ChatModeResponse:
         question=payload.user_message,
         categories_payload=categories_payload,
         profile_context=profile_context,
+        original_query=original_query,
+        clarification_answers=clarification_answers,
+        session_category=session_category,
     )
 
     messages = list(session.get("messages") or [])

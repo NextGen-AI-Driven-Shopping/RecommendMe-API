@@ -2,6 +2,11 @@
 Response models for the RecommendMe API.
 
 Defines the shape of every outbound JSON response served by the API.
+
+Flow.md hierarchy:
+    Category  (display label — exactly 1 per session)
+      └── Product Type  (functional class — drives SERP query, max 10)
+            └── Product Items  (real listings — fetched from SERP per Product Type, up to 10)
 """
 
 from typing import List, Literal, Optional, Union
@@ -10,26 +15,91 @@ from pydantic import BaseModel, Field
 
 
 class ProductCard(BaseModel):
-    """A single product recommendation card."""
+    """A single product recommendation card sourced from SERP (never AI-generated)."""
 
     title: str
+    """Product name from SERP — never AI-generated (Flow.md §37)."""
+
     price: Optional[str] = None
+    """Price in INR. Required for card rendering."""
+
     url: str
+    """Buy link — opens in new tab."""
+
     image_url: Optional[str] = None
+    """Product image URL for card display."""
+
     source: Optional[str] = None
+    """Source marketplace / retailer."""
+
     rating: Optional[float] = None
+    """Star rating when available."""
+
     reviews: Optional[int] = None
+    """Review count when available."""
+
     explanation: Optional[str] = None
+    """Short description from listing or AI fallback."""
+
     label: Optional[str] = None
+    """Rank label (e.g. 'Best Choice', 'Top 2')."""
+
+    brand: Optional[str] = None
+    """Brand name when available."""
+
+    delivery_info: Optional[str] = None
+    """Delivery information when available."""
+
+    availability: Optional[str] = None
+    """In stock / Out of stock when available."""
 
 
-class CategoryResult(BaseModel):
-    """Ranked product recommendations grouped under a single category."""
+class ProductTypeResult(BaseModel):
+    """One product type section with its SERP-fetched product items.
 
-    category: str
-    tagline: Optional[str] = None
-    why_needed: Optional[str] = None
-    products: List[ProductCard]
+    Flow.md §Data Hierarchy:
+    - product_type: functional class name — used as the SERP query basis.
+    - description: unique 2–3 sentence context-aware explanation of WHY this
+      product type is needed in the user's specific situation.
+    - product_items: real-world listings fetched from SERP (up to 10).
+    """
+
+    product_type: str
+    """Functional class name (e.g. 'Waterproof Trekking Shoes'). Used as SERP query."""
+
+    description: str
+    """Unique 2–3 sentence description specific to the user's context."""
+
+    product_items: List[ProductCard] = Field(default_factory=list)
+    """Real listings fetched from SERP (0–10). Empty when SERP failed for this type."""
+
+    serp_failed: bool = False
+    """True when SERP fetch failed for this product type. Frontend shows failure banner."""
+
+    # ── Backward compat aliases ───────────────────────────────────────────────
+    @property
+    def products(self) -> List[ProductCard]:
+        """Alias for product_items — used by legacy frontend normalizer."""
+        return self.product_items
+
+    @property
+    def why_needed(self) -> str:
+        """Alias for description — used by legacy frontend normalizer."""
+        return self.description
+
+    @property
+    def category(self) -> str:
+        """Alias for product_type — used by legacy frontend normalizer."""
+        return self.product_type
+
+    @property
+    def tagline(self) -> Optional[str]:
+        """Legacy compat — returns None."""
+        return None
+
+
+# ── Keep old name as alias so existing imports don't break ──────────────────
+CategoryResult = ProductTypeResult
 
 
 class QueryResponse(BaseModel):
@@ -51,7 +121,24 @@ class QueryResponse(BaseModel):
         None,
         description="AI reasoning summary shown to the user above the product list.",
     )
-    categories: Optional[List[CategoryResult]] = None
+
+    # ── Flow.md canonical fields ───────────────────────────────────────────────
+    category: Optional[str] = Field(
+        None,
+        description="Display label for the session — exactly 1 per session (Flow.md §21).",
+    )
+    product_types: Optional[List[ProductTypeResult]] = Field(
+        None,
+        description="Up to 10 product type sections, each with description + SERP items (Flow.md §27).",
+    )
+
+    # ── Backward compat — frontend still reads .categories ────────────────────
+    # Populated by the route handler from product_types for old frontend code.
+    categories: Optional[List[ProductTypeResult]] = Field(
+        None,
+        description="Legacy alias for product_types. Deprecated — use product_types instead.",
+    )
+
     session_id: Optional[str] = None
     clarification_round: Optional[int] = Field(
         None,
@@ -78,13 +165,6 @@ class QueryResponse(BaseModel):
         description="Detected intent: 'recommendation', 'comparison', 'exploration'.",
     )
     # ── Data-source transparency fields ───────────────────────────────────────
-    # The frontend MUST use these to decide what UI elements to render.
-    #
-    # data_source values:
-    #   "live"        → SerpAPI returned real products; show price + Buy Now.
-    #   "llm_only"    → Products are LLM ideas only; hide price & Buy Now;
-    #                   label section "Ideas only (no live data)".
-    #   "unavailable" → All sources failed; categories=[]; show error banner.
     data_source: Optional[Literal["live", "llm_only", "unavailable"]] = Field(
         None,
         description=(
@@ -164,7 +244,7 @@ class ChatMessageState(BaseModel):
     type: Optional[Literal["followup", "recommendations", "text"]] = None
     questions: Optional[List[str]] = None
     summary: Optional[str] = None
-    categories: Optional[List[CategoryResult]] = None
+    categories: Optional[List[ProductTypeResult]] = None
     timestamp: str
 
 

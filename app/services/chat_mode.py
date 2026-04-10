@@ -14,19 +14,31 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _extract_products(categories_payload: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+def _extract_products(product_types_payload: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """Extract flattened product list from either new product_types or legacy categories payload."""
     flattened: list[dict[str, str]] = []
-    for category in categories_payload or []:
-        category_name = str(category.get("category") or "General").strip() or "General"
-        for product in category.get("products") or []:
+    for pt in product_types_payload or []:
+        # Support both new schema (product_type/description/product_items)
+        # and legacy schema (category/why_needed/products)
+        pt_name = str(
+            pt.get("product_type") or pt.get("category") or "General"
+        ).strip() or "General"
+        pt_description = str(pt.get("description") or pt.get("why_needed") or "").strip()
+        # Use product_items (new) or products (legacy)
+        items = pt.get("product_items") or pt.get("products") or []
+        for product in items:
             flattened.append(
                 {
-                    "category": category_name,
+                    "product_type": pt_name,
+                    "category": pt_name,  # legacy compat
+                    "type_description": pt_description,
                     "title": str(product.get("title") or "").strip(),
                     "price": str(product.get("price") or "").strip(),
                     "reason": str(product.get("explanation") or "").strip(),
                     "label": str(product.get("label") or "").strip(),
                     "url": str(product.get("url") or "").strip(),
+                    "rating": str(product.get("rating") or "").strip(),
+                    "brand": str(product.get("brand") or "").strip(),
                 }
             )
     return [item for item in flattened if item["title"]]
@@ -187,8 +199,27 @@ def _heuristic_chat_answer(question: str, products: list[dict[str, str]]) -> str
 
 
 
-def _build_llm_prompt(question: str, products: list[dict[str, str]], profile_context: dict[str, Any] | None) -> str:
+def _build_llm_prompt(
+    question: str,
+    products: list[dict[str, str]],
+    profile_context: dict[str, Any] | None,
+    *,
+    original_query: str | None = None,
+    clarification_answers: list[dict[str, str]] | None = None,
+    session_category: str | None = None,
+    product_type_descriptions: list[dict[str, str]] | None = None,
+) -> str:
+    """Build the full-context prompt for chat mode (Flow.md §8).
+
+    Flow.md requires the AI to receive:
+    - Initial user query
+    - All 5 follow-up questions and user responses
+    - Generated category and all product type descriptions
+    - All product items retrieved from SERP
+    - User profile / settings data (if logged in)
+    """
     compact_products = products[:20]
+
     profile_line = ""
     if profile_context:
         profile_line = (
@@ -196,12 +227,41 @@ def _build_llm_prompt(question: str, products: list[dict[str, str]], profile_con
             f"interests={profile_context.get('interests')}\n"
         )
 
+    original_query_line = ""
+    if original_query:
+        original_query_line = f"Original user query: {original_query}\n"
+
+    qa_context = ""
+    if clarification_answers:
+        qa_pairs = "\n".join(
+            f"  Q: {pair.get('question', '')}\n  A: {pair.get('answer', '')}"
+            for pair in clarification_answers
+        )
+        qa_context = f"Follow-up Q&A context:\n{qa_pairs}\n"
+
+    category_line = ""
+    if session_category:
+        category_line = f"Session category: {session_category}\n"
+
+    type_desc_context = ""
+    if product_type_descriptions:
+        desc_lines = "\n".join(
+            f"  - {d.get('product_type', '')}: {d.get('description', '')}"
+            for d in product_type_descriptions[:10]
+        )
+        type_desc_context = f"Product type descriptions:\n{desc_lines}\n"
+
     return (
-        "You are RecommendMe chat mode assistant. Answer only using the provided recommendation context. "
-        "If data is missing, say what is missing briefly. Keep answer concise and actionable.\n"
+        "You are RecommendMe chat mode assistant. Answer ONLY using the provided recommendation context. "
+        "Reference specific products, prices, and details from the context. "
+        "If data is missing, say what is missing briefly. Keep the answer concise and actionable.\n\n"
         f"{profile_line}"
+        f"{original_query_line}"
+        f"{qa_context}"
+        f"{category_line}"
+        f"{type_desc_context}"
         f"User question: {question}\n"
-        f"Recommended products JSON: {json.dumps(compact_products, ensure_ascii=True)}"
+        f"Recommended products (JSON): {json.dumps(compact_products, ensure_ascii=True)}"
     )
 
 
@@ -322,13 +382,40 @@ async def answer_chat_followup(
     question: str,
     categories_payload: list[dict[str, Any]] | None,
     profile_context: dict[str, Any] | None = None,
+    original_query: str | None = None,
+    clarification_answers: list[dict[str, Any]] | None = None,
+    session_category: str | None = None,
 ) -> str:
-    """Return context-aware answer for a post-recommendation chat mode question."""
+    """Return context-aware answer for a post-recommendation chat mode question.
+
+    Flow.md §8 — Full context is passed to the AI on every chat message:
+    - Initial user query
+    - All 5 follow-up questions and user responses
+    - Generated category and all product type descriptions
+    - All product items retrieved from SERP
+    - User profile / settings data
+    """
     products = _extract_products(categories_payload)
     heuristic = _heuristic_chat_answer(question, products)
 
+    # Build product type descriptions list for the prompt
+    product_type_descriptions: list[dict[str, str]] = []
+    for pt in categories_payload or []:
+        pt_name = str(pt.get("product_type") or pt.get("category") or "").strip()
+        pt_desc = str(pt.get("description") or pt.get("why_needed") or "").strip()
+        if pt_name:
+            product_type_descriptions.append({"product_type": pt_name, "description": pt_desc})
+
     settings = get_settings()
-    prompt = _build_llm_prompt(question, products, profile_context)
+    prompt = _build_llm_prompt(
+        question,
+        products,
+        profile_context,
+        original_query=original_query,
+        clarification_answers=clarification_answers,
+        session_category=session_category,
+        product_type_descriptions=product_type_descriptions,
+    )
 
     for provider_name, provider_fn in (
         ("groq", _try_groq),
