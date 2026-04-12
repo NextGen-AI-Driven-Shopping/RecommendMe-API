@@ -1,139 +1,80 @@
 # RecommendMe API
 
-FastAPI backend for conversational shopping recommendations.
+FastAPI backend for conversational recommendations.
 
-## Overview
+## Canonical Documentation
 
-The backend supports a full multi-turn recommendation flow:
+- Backend reference (source of truth): `docs/BackendCodebaseReference.md`
+- Documentation audit report: `docs/DocumentationValidationReport.md`
 
-1. Validate and sanitize user query input.
-2. Run clarity classification (clear or follow-up needed).
-3. Collect clarification answers (up to 5 total prompts).
-4. Generate category plan using multi-provider AI fallback.
-5. Fetch products primarily from SerpAPI.
-6. Fall back to direct Google fetch only when SerpAPI fails or returns empty.
-7. Persist session snapshots for progressive frontend rendering.
+## Quick Start
 
-## Core Capabilities
-
-- AI fallback chain for reasoning:
-  - Groq
-  - OpenAI
-  - Gemini
-  - Ollama (local fallback)
-- Clarification planner with sufficiency scoring.
-- Progressive recommendation snapshots during processing.
-- Session hydration endpoint for frontend polling.
-- CSV-based authentication and JSON-based profile storage.
-
-## API Endpoints
-
-### System
-
-- GET /
-- GET /health
-- GET /v1/health
-
-### Recommendation Flow
-
-- POST /v1/query
-- POST /v1/query/sufficiency_check
-- GET /v1/sessions/{session_id}
-- GET /v1/sessions/{session_id}/exists
-
-### Auth and Profile
-
-- POST /v1/auth/signup
-- POST /v1/auth/login
-- POST /v1/auth/forgot-password
-- POST /v1/auth/reset-password
-- GET /v1/auth/me
-- GET /v1/profile
-- POST /v1/profile
-- PUT /v1/profile/update
-- GET /v1/profile/avatars
-- POST /v1/profile/avatar/upload
-
-## Query Contract
-
-Example request body for POST /v1/query:
-
-```json
-{
-  "session_id": "optional-session-id",
-  "user_message": "What should I buy for a first-time kitchen setup?",
-  "conversation_history": [
-    { "role": "user", "content": "What should I buy for a first-time kitchen setup?" }
-  ],
-  "clarification": [
-    { "question": "How many people will you cook for?", "answer": "4-5" }
-  ]
-}
-```
-
-Recommendation responses use status = recommendations and include summary and categories.
-Clarification responses use status = clarification_needed and include questions.
-
-## Local Setup
-
-1. Install dependencies.
+Install dependencies:
 
 ```bash
-pip install -r Requirements/requirements.txt
+python -m pip install -r Requirements/requirements.txt
+python -m pip install -r Requirements/requirements-dev.txt
 ```
 
-2. Optional dev dependencies.
+Run locally:
 
 ```bash
-pip install -r Requirements/requirements-dev.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-3. Start API.
+Syntax check:
 
 ```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m compileall app
 ```
 
-## Environment Variables
-
-Core:
-
-- APP_ENV
-- DEBUG
-- CORS_ORIGINS
-- USERS_CSV_PATH
-- PROFILE_STORE_PATH
-
-Provider/API keys:
-
-- GROQ_API_KEY
-- OPENAI_API_KEY
-- GEMINI_API_KEY
-- SERPAPI_KEY
-
-Model settings:
-
-- GROQ_MODEL, GROQ_MODELS
-- OPENAI_MODEL, OPENAI_MODELS
-- GEMINI_MODEL, GEMINI_MODELS
-- OLLAMA_URL, OLLAMA_MODEL, OLLAMA_MODELS
-
-Optional:
-
-- REDIS_URL
-- AUTH_TOKEN_SECRET
-- AUTH_TOKEN_TTL_MINUTES
-
-## Tests
-
-Run backend tests from project root:
+Tests:
 
 ```bash
-pytest -q
+python -m pytest -q tests
 ```
 
-## Additional Docs
+Current repository state: `tests/` contains no test files in this workspace.
 
-- docs/api_architecture.md
-- docs/ai_model_pipeline.md
-- docs/project_structure.md
+## API Surface Summary
+
+System:
+- `GET /`
+- `GET /health`
+- `GET /v1/health`
+
+Recommendation:
+- `POST /v1/query`
+- `POST /v1/query/sufficiency_check`
+- `GET /v1/sessions/{session_id}`
+- `GET /v1/sessions/{session_id}/exists`
+- `POST /v1/chat/mode`
+
+Auth:
+- `POST /v1/auth/signup`
+- `POST /v1/auth/login`
+- `POST /v1/auth/forgot-password`
+- `POST /v1/auth/reset-password`
+- `GET /v1/auth/me` (bearer)
+
+Profile:
+- `GET /v1/profile` (bearer)
+- `POST /v1/profile` (bearer)
+- `PUT /v1/profile/update` (bearer)
+- `GET /v1/profile/avatars`
+- `POST /v1/profile/avatar/upload` (bearer)
+
+## Storage Model
+
+- Users: CSV file (`USERS_CSV_PATH`, default `app/data/users.csv`)
+- Profiles: JSON file (`PROFILE_STORE_PATH`, default `app/data/profiles.json`)
+- Sessions: in-memory process store (`app/utils/session.py`)
+
+## Deployment Files
+
+- Railway config: `railway.toml`
+- Startup script: `start.sh`
+- Container files: `Docker/Dockerfile`, `Docker/docker-compose.yml`
+- CI/CD workflows: `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`
+
+Current workflow state: both GitHub Actions jobs are present but disabled via `if: false`.
