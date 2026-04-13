@@ -1,6 +1,17 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Backend Codebase Reference
 
-Last verified: 2026-04-12
+Last verified: 2026-04-13
 
 ## Reference Scope
 
@@ -10,10 +21,10 @@ This file is the consolidated technical reference for backend implementation fac
 
 Executed in this workspace:
 - `python -m compileall app` -> success
-- `python -m pytest -q tests` -> no tests discovered
+- `python -m pytest -q tests` -> `50 passed`
 - `python -c "... import app.main ..."` -> success
-- `python -c "... import app.services.ranking ..."` -> ImportError
-- `python -c "... import app.services.suggestions ..."` -> ImportError
+- `python -c "... import app.services.ranking ..."` -> success
+- `python -c "... import app.services.suggestions ..."` -> success
 
 ## Backend Scope Summary
 
@@ -49,7 +60,8 @@ Response models:
 - No active rate-limit middleware despite rate-limit settings field.
 - Session TTL settings field does not currently drive session module constant.
 - Session/cache state is process-local.
-- Legacy ranking/suggestions modules are import-inconsistent in current snapshot.
+- Query request deduplication cache is process-local and memory-backed.
+- Dev login bypass requires explicit opt-in via `ALLOW_DEV_LOGIN_BYPASS=true` and `APP_ENV=development`.
 
 ## Determinability
 
@@ -57,3 +69,4 @@ Not determinable from the current codebase:
 - production traffic and SLA targets.
 - external scheduled cleanup jobs.
 - intended future status of disabled workflow jobs.
+

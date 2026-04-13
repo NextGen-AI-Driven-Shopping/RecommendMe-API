@@ -45,9 +45,13 @@ class UserProfile:
         return []
 
     def to_public_dict(self) -> dict:
-        data = asdict(self)
+        data = self.to_storage_dict()
         data.pop("password_reset_token", None)
         data.pop("password_reset_expires_at", None)
+        return data
+
+    def to_storage_dict(self) -> dict:
+        data = asdict(self)
         data["interests"] = self._normalize_interests(data.get("interests"))
         return data
 
@@ -106,7 +110,7 @@ class JsonProfileStore:
             profile.updated_at = datetime.now(timezone.utc).isoformat()
             if not profile.created_at:
                 profile.created_at = profile.updated_at
-            data[profile.user_id] = profile.to_public_dict()
+            data[profile.user_id] = profile.to_storage_dict()
             self._write_all(data)
         return profile
 
@@ -123,11 +127,31 @@ class JsonProfileStore:
         return self.update(user_id, password_reset_token=reset_token, password_reset_expires_at=expires_at)
 
     def find_by_reset_token(self, reset_token: str) -> Optional[UserProfile]:
+        now = datetime.now(timezone.utc)
         with _PROFILE_LOCK:
             profiles = self._read_all()
+
         for profile_data in profiles.values():
-            if profile_data.get("password_reset_token") == reset_token:
-                return UserProfile(**profile_data)
+            if profile_data.get("password_reset_token") != reset_token:
+                continue
+
+            expires_at_raw = profile_data.get("password_reset_expires_at")
+            if not expires_at_raw:
+                continue
+
+            try:
+                expires_at = datetime.fromisoformat(str(expires_at_raw))
+            except ValueError:
+                continue
+
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+            if expires_at < now:
+                continue
+
+            return UserProfile(**profile_data)
+
         return None
 
     def clear_reset_token(self, user_id: str) -> Optional[UserProfile]:

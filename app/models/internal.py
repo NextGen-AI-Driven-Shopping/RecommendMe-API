@@ -1,182 +1,180 @@
 """
 app/models/internal.py
 
-Internal Pydantic models used ONLY within the backend pipeline.
-These are NEVER serialised into API responses — they are intermediate
-data structures that services pass between each other.
+Internal Pydantic models aligned to Flow.md's 3-tier data hierarchy.
 
-WHO USES THESE MODELS
-─────────────────────
-  recommender.py  (Lahari)  → produces ReasoningResult
-  ranking.py      (Sharanu) → produces RankedProduct, populates ReasoningResult
-  suggestions.py  (your contribution) → consumes ReasoningResult
+Hierarchy
+---------
+  Category       — Display-only label for UI grouping (exactly 1 per session).
+  Product Type   — Functional class of product (up to 10 per session).
+  Product Item   — Real-world product listing from SERP (up to 10 per type).
 
-DO NOT expose these in API responses.
-For API-facing schemas, see requests.py and responses.py.
-
-STRUCTURE OVERVIEW
-──────────────────
-  Product           Raw product data fetched from SerpAPI (one listing).
-  RankedProduct     A Product that has been ranked and explained by GPT-4o.
-  Category          A named group of Products (e.g. "Laptop", "Backpack").
-  ReasoningResult   The complete output of the recommendation pipeline —
-                    this is what recommender.py returns and suggestions.py reads.
+These models are NEVER serialised directly into API responses — they are
+intermediate data structures that services pass between each other.
+For API-facing schemas, see responses.py.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
-# ── 1. PRODUCT ────────────────────────────────────────────────────────────────
+# ── 1. PRODUCT ITEM ──────────────────────────────────────────────────────────
 #
-# Represents a single raw product listing as returned by SerpAPI.
-# Populated by products.py (Vrandha) during the SerpAPI fetch step.
-# Used inside Category to hold the products belonging to that category.
+# Represents a single real-world product listing retrieved from the SERP API.
+# Product names are ALWAYS sourced from SERP — never AI-generated.
 # ─────────────────────────────────────────────────────────────────────────────
 
-class Product(BaseModel): # Represents a single raw product listing from SerpAPI, with optional fields.
+
+class ProductItem(BaseModel):
     """
-    A single raw product fetched from SerpAPI Google Shopping results.
+    A single real-world product listing fetched from SERP API.
 
-    All fields except `title` are Optional because SerpAPI does not
-    guarantee every field is present for every listing.
-
-    Attributes
-    ----------
-    title       : Product name as returned by SerpAPI. Required.
-    price       : Price string (e.g. "₹45,000" or "$799"). May be absent.
-    url         : Direct purchase link. May be absent.
-    image_url   : Thumbnail URL from SerpAPI. May be absent.
-    source      : Platform name (e.g. "Amazon", "Flipkart"). May be absent.
-    rating      : Numeric rating out of 5. May be absent.
-    explanation : Why this product fits the user's query — written by ranking.py
-                  (Sharanu) via GPT-4o. Empty string if ranking hasn't run yet.
+    Required fields block card rendering if missing.
+    Optional fields are shown when available and silently skipped when absent.
     """
 
-    title: str
-    price: Optional[str] = None
-    url: Optional[str] = None
-    image_url: Optional[str] = None
-    source: Optional[str] = None
-    rating: Optional[float] = None
-    explanation: str = ""           # Populated by ranking.py after GPT-4o ranking
+    # Required fields — card will not render without these
+    product_name: str = Field(..., description="Product name sourced from SERP — never AI-generated.")
+    image_url: str = Field(default="", description="Product image URL for card display.")
+    price_inr: str = Field(default="", description="Price in INR. Convert from source currency if needed.")
+    short_description: str = Field(default="", description="From listing, or AI fallback if unavailable.")
+    buy_link: str = Field(default="", description="Direct purchase link. Opens in a new tab.")
+
+    # Optional fields — shown when available, silently skipped when absent
+    rating: Optional[float] = Field(default=None, description="Numeric rating from SERP.")
+    brand: Optional[str] = Field(default=None, description="Brand name from SERP.")
+    reviews_count: Optional[int] = Field(default=None, description="Number of reviews from SERP.")
+    delivery_info: Optional[str] = Field(default=None, description="Delivery information from SERP.")
+    availability: Optional[str] = Field(default=None, description="Stock status, e.g. 'In Stock'.")
+    source: Optional[str] = Field(default=None, description="Platform name, e.g. 'Amazon', 'Flipkart'.")
+
+    @property
+    def has_required_fields(self) -> bool:
+        """True if all required fields for card rendering are present."""
+        return bool(
+            self.product_name
+            and self.image_url
+            and self.price_inr
+            and self.buy_link
+        )
 
 
-# ── 2. RANKED PRODUCT ────────────────────────────────────────────────────────
+# ── 2. PRODUCT TYPE ──────────────────────────────────────────────────────────
 #
-# A Product that has been ranked by ranking.py (Sharanu) via GPT-4o.
-# Extends Product with ranking position and personalised explanations.
-#
-# The rank-1 product (best pick) additionally gets a `why_best_for_you`
-# explanation tailored to the user's specific query and session context.
+# A functional class of product the user actually needs (e.g. "Waterproof
+# Trekking Shoes"). Each Product Type drives one SERP search query.
 # ─────────────────────────────────────────────────────────────────────────────
 
-class RankedProduct(BaseModel): # A Product that has been ranked and explained by GPT-4o, with rank and personalised explanations.
+
+class ProductType(BaseModel):
     """
-    A product that has been ranked and explained by the GPT-4o ranking step.
+    A functional class of product generated by AI at runtime.
 
-    Produced by ranking.py (Sharanu) and stored in ReasoningResult.
-    Consumed by suggestions.py to build SuggestedProduct objects.
-
-    Attributes
-    ----------
-    rank              : Global rank across all categories. 1 = best pick.
-    title             : Product name.
-    category          : Category this product belongs to (e.g. "Laptop").
-    price             : Price string. May be absent.
-    url               : Purchase link. May be absent.
-    image_url         : Thumbnail URL. May be absent.
-    source            : Platform name. May be absent.
-    rating            : Numeric rating out of 5. May be absent.
-    why_its_good      : General explanation of why this product is a strong choice.
-                        Written by GPT-4o in ranking.py. Present for all ranks.
-    why_best_for_you  : Personalised explanation specific to the user's query.
-                        ONLY populated for rank == 1 (the best pick).
-                        Empty string for all other ranks.
+    Each Product Type drives one SERP search query. The AI also generates
+    a brief description explaining why this product type is relevant to
+    the user's specific context.
     """
 
-    rank: int
-    title: str
-    category: str
-    price: Optional[str] = None
-    url: Optional[str] = None
-    image_url: Optional[str] = None
-    source: Optional[str] = None
-    rating: Optional[float] = None
-    why_its_good: str = ""
-    why_best_for_you: str = ""      # Only populated for rank == 1
+    product_type: str = Field(..., description="Functional class name, e.g. 'Waterproof Trekking Shoes'.")
+    description: str = Field(
+        default="",
+        description="2-3 sentence description referencing the user's specific context.",
+    )
+    product_items: List[ProductItem] = Field(
+        default_factory=list,
+        description="Real product listings fetched from SERP for this type.",
+    )
+    serp_error: bool = Field(
+        default=False,
+        description="True when SERP retrieval failed for this product type.",
+    )
+    serp_error_message: Optional[str] = Field(
+        default=None,
+        description="User-facing error message when SERP fails.",
+    )
+
+    @property
+    def has_sufficient_items(self) -> bool:
+        """True if at least 5 valid product items are available for card rendering."""
+        valid_count = sum(1 for item in self.product_items if item.has_required_fields)
+        return valid_count >= 5
+
+    @property
+    def valid_items(self) -> List[ProductItem]:
+        """Return only items with all required fields present."""
+        return [item for item in self.product_items if item.has_required_fields]
 
 
-# ── 3. CATEGORY ───────────────────────────────────────────────────────────────
+# ── 3. RECOMMENDATION RESULT ─────────────────────────────────────────────────
 #
-# A named product category with its associated raw Product listings.
-# Produced by recommender.py (Lahari) after GPT-4o intent extraction.
-# Each category corresponds to one SerpAPI query (e.g. "lightweight laptop
-# under ₹60,000") whose results are stored as Product objects inside it.
+# The complete output of the recommendation pipeline (Steps 5 + 6).
+# Exactly 1 category + up to 10 product types + their SERP items.
 # ─────────────────────────────────────────────────────────────────────────────
 
-class Category(BaseModel): # A product category identified from the user's query, with its raw Product listings.
+
+class RecommendationResult(BaseModel):
     """
-    A product category identified from the user's query, with its products.
+    Complete output of the recommendation + SERP retrieval pipeline.
 
-    Produced by recommender.py (Lahari) during the intent extraction step.
-    Each Category maps to one SerpAPI search query.
-    Consumed by suggestions.py (CategoryBuilder) to build grouped UI views.
-
-    Attributes
-    ----------
-    name        : Category label as identified by GPT-4o (e.g. "Laptop", "Bag").
-    products    : Raw Product listings fetched from SerpAPI for this category.
-                  Populated by products.py (Vrandha). May be empty if SerpAPI
-                  returned no results for this category.
+    This is what the orchestrator produces after Steps 5 and 6.
     """
 
-    name: str
-    products: List[Product] = Field(default_factory=list)
+    category: str = Field(
+        default="Recommendations",
+        description="Display-only label for UI grouping. Exactly 1 per session.",
+    )
+    product_types: List[ProductType] = Field(
+        default_factory=list,
+        description="Functional product classes, up to 10 per session.",
+    )
+    provider_used: Optional[str] = Field(
+        default=None,
+        description="Which LLM handled the recommendation step.",
+    )
+
+    @property
+    def has_results(self) -> bool:
+        """True if at least one product type has items."""
+        return any(pt.product_items for pt in self.product_types)
+
+    @property
+    def all_serp_failed(self) -> bool:
+        """True if SERP failed for every product type."""
+        return all(pt.serp_error for pt in self.product_types) if self.product_types else True
 
 
-# ── 4. REASONING RESULT ───────────────────────────────────────────────────────
+# ── 4. QUESTION WITH OPTIONS ─────────────────────────────────────────────────
 #
-# The complete output of the recommendation pipeline.
-# This is what recommender.py (Lahari) returns and what suggestions.py reads.
-#
-# Flow that produces this object:
-#   1. GPT-4o extracts intent and identifies Categories          [recommender.py]
-#   2. SerpAPI fetches Product listings per Category             [products.py]
-#   3. GPT-4o ranks products and writes explanations             [ranking.py]
-#   4. ReasoningResult is assembled with all of the above        [recommender.py]
-#   5. suggestions.py reads this and converts it to SuggestionResponse
+# Represents a follow-up question with optional selectable answer options.
+# Used in the Question Engine (Step 3).
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ReasoningResult(BaseModel):# The complete output of the recommendation + ranking pipeline, containing ranked products, categories, and metadata.
-    """
-    The complete output of the recommendation + ranking pipeline.
 
-    Produced by recommender.py (Lahari) and consumed by suggestions.py.
-    Contains everything needed to build the final SuggestionResponse.
+class QuestionWithOptions(BaseModel):
+    """A follow-up question with optional selectable answer options."""
 
-    Attributes
-    ----------
-    best_product        : The single highest-ranked product (rank == 1) with a
-                          personalised explanation. None if the pipeline produced
-                          no results (e.g. SerpAPI returned nothing).
+    question: str = Field(..., description="The follow-up question text.")
+    options: List[str] = Field(
+        default_factory=list,
+        description="Selectable answer options (pills). Empty if open-ended.",
+    )
 
-    ranked_products     : All products across all categories, sorted by rank.
-                          Includes the rank-1 product — suggestions.py skips it
-                          when building alternatives to avoid duplication.
 
-    categories          : All categories with their raw Product listings, used
-                          for grouped (tab/accordion) UI views.
+# ── 5. CLARIFICATION ROUND RESULT ────────────────────────────────────────────
+#
+# Result from the question engine for a specific round.
+# ─────────────────────────────────────────────────────────────────────────────
 
-    provider_used       : Which LLM handled the recommendation step.
-                          Typically "gpt-4o" but may differ if a fallback ran
-                          (e.g. "gpt-4o-mini" if the primary model was unavailable).
-                          None if the pipeline failed before the LLM step.
-    """
 
-    best_product: Optional[RankedProduct] = None
-    ranked_products: List[RankedProduct] = Field(default_factory=list)
-    categories: List[Category] = Field(default_factory=list)
-    provider_used: Optional[str] = None
+class ClarificationRoundResult(BaseModel):
+    """Result from generating questions for a specific round."""
+
+    round_number: int = Field(..., description="1 for Round 1 (3 questions), 2 for Round 2 (2 questions).")
+    questions: List[QuestionWithOptions] = Field(
+        default_factory=list,
+        description="Questions generated for this round.",
+    )
+    provider: str = Field(default="unknown", description="Which provider generated these questions.")

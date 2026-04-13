@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # API Flow
 
 ## API Surface
@@ -34,8 +45,8 @@ Public root/liveness routes:
 ## Primary Query Flow (`POST /v1/query`)
 
 1. Validate input (`sanitize_and_validate_query`).
-2. Create or update session snapshot.
-3. Detect domain and intent (`classify_intent`).
+2. Resolve `request_id` and check short-window in-memory dedup cache.
+3. Create or update session snapshot.
 4. Branch:
 - If clarification payload exists: run sufficiency planner.
 - Else: run vagueness classification.
@@ -43,7 +54,7 @@ Public root/liveness routes:
 6. If clear/sufficient: generate category plan (`generate_category_plan`).
 7. Fetch products per product type (`fetch_products`) with fallback behavior.
 8. Persist progressive snapshots while fetching.
-9. Return recommendation response with `data_source` and `degraded` flags.
+9. Cache final response by `request_id` and return `QueryResponse`.
 
 ## Sufficiency Flow (`POST /v1/query/sufficiency_check`)
 
@@ -60,8 +71,8 @@ Public root/liveness routes:
 ## Chat Mode Flow (`POST /v1/chat/mode`)
 
 1. Load session by `session_id`.
-2. Ensure recommendation context exists (`product_types` or legacy `categories`).
-3. Build context package (query, clarifications, profile, category, items).
+2. Ensure recommendation context exists (`categories` or `latest_response.categories`).
+3. Build context package (question + products + optional profile context).
 4. Try provider chain for follow-up answer.
 5. If providers fail, return heuristic answer.
 6. Append user and assistant messages to session.
@@ -78,11 +89,25 @@ Public root/liveness routes:
 
 ### Login
 
-1. Resolve dev-mode bypass rules (`APP_ENV != production`).
+1. Resolve dev-mode bypass rules (`APP_ENV=development` and `ALLOW_DEV_LOGIN_BYPASS=true`).
 2. Validate credentials against CSV store when required.
 3. Upsert profile.
 4. Optionally update linked session status.
 5. Return user + token payload.
+
+### Forgot Password
+
+1. Resolve account by identifier.
+2. Return generic non-enumerating message when account is missing.
+3. If account exists, persist reset token + expiry in profile store.
+4. Return reset token only for non-production environments.
+
+### Reset Password
+
+1. Resolve profile by reset token.
+2. Enforce token expiration during lookup.
+3. Update CSV password hash and clear reset token fields.
+4. Return success message.
 
 ## Profile Flow
 
@@ -95,3 +120,4 @@ Public root/liveness routes:
 `GET /v1/health` returns a consolidated health payload:
 - Configured/not configured status for API-key-based services.
 - Reachability probes for Ollama and Redis.
+

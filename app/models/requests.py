@@ -1,7 +1,7 @@
 """
 Request models for the RecommendMe API.
 
-Used to validate and parse all incoming HTTP request bodies.
+Aligned to Flow.md — validates all incoming HTTP request bodies.
 """
 
 from typing import List, Literal, Optional
@@ -21,40 +21,47 @@ class ConversationMessage(BaseModel):
             return value.strip()
         return value
 
+
 class ClarificationAnswer(BaseModel):
     """A single follow-up question and its answer."""
     question: str
     answer: str
 
-class QueryRequest(BaseModel):
-    """Request body for POST /v1/query."""
 
-    # The user's current message / search query.
+class QueryRequest(BaseModel):
+    """
+    Request body for POST /v1/query.
+
+    Supports the full Flow.md pipeline: initial query, pre-clarification,
+    Round 1 (3 questions), Round 2 (2 questions), and final recommendation.
+    """
+
     user_message: str = Field(
         ...,
         min_length=3,
         max_length=500,
-        description="The user's product search query or conversational message.",
+        description="The user's query or conversational message.",
     )
     session_id: Optional[str] = Field(
         None,
         description="Session ID for conversation continuity across requests.",
     )
-    # CRITICAL FIX: Add request_id for deduplication and race condition prevention
     request_id: Optional[str] = Field(
         None,
-        description="Unique request ID to prevent duplicate processing and race conditions.",
+        description="Unique request ID to prevent duplicate processing.",
     )
-    # Full conversation history sent by the frontend for multi-turn context.
     conversation_history: Optional[List[ConversationMessage]] = Field(
         default_factory=list,
-        max_length=20,
+        max_length=30,
         description="Prior conversation messages for multi-turn context.",
     )
-    # Answers to clarification questions
     clarification: Optional[List[ClarificationAnswer]] = Field(
         default_factory=list,
         description="List of clarification questions and user responses.",
+    )
+    clarification_round: Optional[int] = Field(
+        None,
+        description="Current round: 0 for pre-clarification, 1 for Round 1 answers, 2 for Round 2 answers.",
     )
 
     @field_validator("user_message", mode="before")

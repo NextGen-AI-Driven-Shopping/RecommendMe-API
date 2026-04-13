@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Architecture Explanation
 
 ## High-Level Architecture
@@ -99,12 +110,13 @@ At startup (`app/main.py`):
 
 ### Stateful Components
 - In-memory session store (`app/utils/session.py`)
-- Process-level SerpAPI availability flag (`app/services/system_state.py`)
-- Optional in-memory product cache (`app/services/cache.py` and `_FETCH_CACHE` in `products.py`)
+- In-memory request deduplication cache (`app/main.py` -> `app.state.request_cache`)
+- Optional in-memory product cache helpers (`app/services/cache.py`)
 
 ## Architectural Trade-Offs
 
 1. CSV/JSON persistence is simple but not horizontally scalable.
 2. In-memory session state is low-latency but process-local.
 3. Provider fallback improves reliability but increases control-path complexity.
-4. Sequential per-product-type fetch keeps logic simple but can increase latency.
+4. Bounded-concurrency product fetch keeps control flow predictable while reducing latency compared with full serial fetch.
+

@@ -35,7 +35,7 @@ from typing import TypeAlias
 import httpx
 
 from app.config.settings import get_settings
-from app.prompts.category_reasoning import extract_json_payload
+from app.utils.prompt_utils import extract_json_payload
 from app.core.logger import get_logger
 from app.prompts.vagueness_check import build_vagueness_prompt
 from app.services.dynamic_intent_analyzer import (
@@ -55,15 +55,18 @@ _PROVIDER_TIMEOUT: dict[str, float] = {
     "groq":   8.0,
     "openai": 8.0,
     "gemini": 8.0,
-    "ollama": 8.0,
+    "ollama": 45.0,
 }
 
 BUSY_MESSAGE = "All AI services are currently unavailable. Please try again later."
+MAX_FOLLOW_UPS = 3
 
 
 class Classification(str, Enum):
     CLEAR = "CLEAR"
     VAGUE = "VAGUE"
+    AMBIGUOUS = "AMBIGUOUS"
+    OUT_OF_SCOPE = "OUT_OF_SCOPE"
     RETRY = "RETRY"   # all providers exhausted, ask user to rephrase
 
 
@@ -79,6 +82,7 @@ class VaguenessResult:
     classification: Classification
     follow_ups: list[str] | None = field(default=None)
     provider: str = field(default="unknown")
+    out_of_scope_message: str | None = field(default=None)
 
     # Convenience -----------------------------------------------------------------
 
@@ -89,6 +93,19 @@ class VaguenessResult:
     @property
     def is_vague(self) -> bool:
         return self.classification == Classification.VAGUE
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.classification == Classification.AMBIGUOUS
+
+    @property
+    def is_out_of_scope(self) -> bool:
+        return self.classification == Classification.OUT_OF_SCOPE
+
+    @property
+    def needs_preclarification(self) -> bool:
+        """True when a pre-clarifying question is needed (vague or ambiguous)."""
+        return self.classification in (Classification.VAGUE, Classification.AMBIGUOUS)
 
     @property
     def needs_retry(self) -> bool:
@@ -149,8 +166,8 @@ def _dynamic_follow_ups(query: str) -> list[str]:
     generator = DynamicFollowUpGenerator()
     questions = generator.generate_from_signals(query, signals, missing)
 
-    # Filter blanks, cap at 1 to keep strict one-question-at-a-time flow.
-    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:1]
+    # Keep up to MAX_FOLLOW_UPS generated options; caller can still ask one-at-a-time.
+    cleaned = [str(q).strip() for q in (questions or []) if str(q).strip()][:MAX_FOLLOW_UPS]
     logger.debug("[Dynamic] generated %d follow-ups for query=%r", len(cleaned), query[:60])
     return cleaned
 
@@ -183,6 +200,24 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
                     classification=Classification.CLEAR, provider=provider
                 )
 
+            if cls_raw == "OUT_OF_SCOPE":
+                oos_message = str(data.get("message", "")).strip()
+                if not oos_message:
+                    oos_message = "I'm a product recommendation assistant. Try asking about a product you're looking for!"
+                logger.info("[%s] OUT_OF_SCOPE (JSON)", provider)
+                return VaguenessResult(
+                    classification=Classification.OUT_OF_SCOPE,
+                    provider=provider,
+                    out_of_scope_message=oos_message,
+                )
+
+            if cls_raw == "AMBIGUOUS":
+                logger.info("[%s] AMBIGUOUS (JSON)", provider)
+                return VaguenessResult(
+                    classification=Classification.AMBIGUOUS,
+                    provider=provider,
+                )
+
             if cls_raw == Classification.VAGUE:
                 raw_qs = (
                     data.get("follow_ups")
@@ -190,7 +225,7 @@ def _parse_ai_response(raw: str, query: str, provider: str) -> VaguenessResult:
                     or data.get("questions")
                 )
                 if isinstance(raw_qs, list) and raw_qs:
-                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:1]
+                    follow_ups = [str(q).strip() for q in raw_qs if str(q).strip()][:MAX_FOLLOW_UPS]
                     logger.info(
                         "[%s] VAGUE — %d AI follow-ups", provider, len(follow_ups)
                     )
@@ -566,3 +601,143 @@ async def classify_vagueness(
 
     logger.warning("All AI providers failed for vagueness classification.")
     return VaguenessResult(classification=Classification.RETRY, provider="busy")
+
+
+# ---------------------------------------------------------------------------
+# Generic provider chain (reusable by other services)
+# ---------------------------------------------------------------------------
+
+
+async def _try_provider_chain(
+    messages: Messages,
+    *,
+    step_name: str = "generic",
+) -> str | None:
+    """
+    Try all AI providers in order, returning the raw text response.
+
+    Used by clarification_runtime and other services that need to call
+    the multi-model fallback chain with custom prompts.
+
+    Returns None if all providers fail.
+    """
+    settings = get_settings()
+
+    # Groq
+    try:
+        api_key = getattr(settings, "GROQ_API_KEY", "")
+        if api_key:
+            candidate_models = []
+            configured_models = getattr(settings, "GROQ_MODELS", []) or []
+            for m in [*configured_models, getattr(settings, "GROQ_MODEL", "")]:
+                if m and m not in candidate_models:
+                    candidate_models.append(m)
+            for model in candidate_models[:3]:
+                try:
+                    async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["groq"]) as client:
+                        response = await client.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={"model": model, "temperature": 0, "messages": messages},
+                        )
+                    if response.status_code == 400:
+                        continue
+                    response.raise_for_status()
+                    text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if text:
+                        logger.info("[%s] Provider chain success via Groq/%s", step_name, model)
+                        return text
+                except Exception as exc:
+                    logger.debug("[%s] Groq/%s failed: %s", step_name, model, exc)
+    except Exception as exc:
+        logger.debug("[%s] Groq provider failed: %s", step_name, exc)
+
+    # OpenAI
+    try:
+        import openai
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+        if api_key:
+            candidate_models = []
+            configured_models = getattr(settings, "OPENAI_MODELS", []) or []
+            for m in [*configured_models, getattr(settings, "OPENAI_MODEL", "")]:
+                if m and m not in candidate_models:
+                    candidate_models.append(m)
+            for model in candidate_models[:2]:
+                try:
+                    client = openai.AsyncOpenAI(api_key=api_key)
+                    completion = await client.chat.completions.create(
+                        model=model, messages=messages, temperature=0, timeout=_PROVIDER_TIMEOUT["openai"],
+                    )
+                    text = (completion.choices[0].message.content or "").strip()
+                    if text:
+                        logger.info("[%s] Provider chain success via OpenAI/%s", step_name, model)
+                        return text
+                except Exception as exc:
+                    logger.debug("[%s] OpenAI/%s failed: %s", step_name, model, exc)
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.debug("[%s] OpenAI provider failed: %s", step_name, exc)
+
+    # Gemini
+    try:
+        api_key = getattr(settings, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+        if api_key:
+            gemini_messages = [
+                {"role": "user" if m["role"] in ("user", "system") else "model", "parts": [{"text": m["content"]}]}
+                for m in messages
+            ]
+            candidate_models = []
+            configured_models = getattr(settings, "GEMINI_MODELS", []) or []
+            for m in [*configured_models, getattr(settings, "GEMINI_MODEL", "")]:
+                if m and m not in candidate_models:
+                    candidate_models.append(m)
+            for model in candidate_models[:2]:
+                try:
+                    async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["gemini"]) as client:
+                        response = await client.post(
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+                            json={"contents": gemini_messages},
+                        )
+                        response.raise_for_status()
+                    text = response.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                    if text:
+                        logger.info("[%s] Provider chain success via Gemini/%s", step_name, model)
+                        return text
+                except Exception as exc:
+                    logger.debug("[%s] Gemini/%s failed: %s", step_name, model, exc)
+    except Exception as exc:
+        logger.debug("[%s] Gemini provider failed: %s", step_name, exc)
+
+    # Ollama (Final Fallback)
+    try:
+        ollama_url = (getattr(settings, "OLLAMA_URL", "") or "http://localhost:11434").strip()
+        candidate_models = []
+        configured_models = getattr(settings, "OLLAMA_MODELS", []) or []
+        for m in [*configured_models, getattr(settings, "OLLAMA_MODEL", ""), "phi3", "phi3:latest", "llama3.2"]:
+            if m and m not in candidate_models:
+                candidate_models.append(m)
+        for model in candidate_models[:2]:
+            try:
+                payload = {"model": model, "stream": False, "messages": messages}
+                async with httpx.AsyncClient(timeout=_PROVIDER_TIMEOUT["ollama"]) as client:
+                    response = await client.post(f"{ollama_url.rstrip('/')}/api/chat", json=payload)
+                    if response.status_code == 404:
+                        prompt = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+                        response = await client.post(
+                            f"{ollama_url.rstrip('/')}/api/generate",
+                            json={"model": model, "prompt": prompt, "stream": False},
+                        )
+                    response.raise_for_status()
+                payload_json = response.json()
+                text = ((payload_json.get("message", {}) or {}).get("content") or payload_json.get("response") or "").strip()
+                if text:
+                    logger.info("[%s] Provider chain success via Ollama/%s", step_name, model)
+                    return text
+            except Exception as exc:
+                logger.warning("[%s] Ollama/%s failed: %r", step_name, model, exc)
+    except Exception as exc:
+        logger.warning("[%s] Ollama provider failed: %r", step_name, exc)
+
+    logger.warning("[%s] All providers failed in _try_provider_chain", step_name)
+    return None

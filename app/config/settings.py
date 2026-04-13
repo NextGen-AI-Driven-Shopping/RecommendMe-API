@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     SESSION_TTL_MINUTES: int = 30
     AUTH_TOKEN_SECRET: str = Field(default="recommendme-dev-secret-change-me")
     AUTH_TOKEN_TTL_MINUTES: int = 10080
+    ALLOW_DEV_LOGIN_BYPASS: bool = False
     REDIS_URL: str = Field(default="")
     AFFILIATE_TAG: str = Field(default="")
     USERS_CSV_PATH: str = Field(default="app/data/users.csv")
@@ -200,6 +201,13 @@ class Settings(BaseSettings):
                 values["OLLAMA_MODEL"] = ollama_models[0]
 
         return values
+
+    @model_validator(mode="after")
+    def enforce_security_constraints(self):
+        if self.APP_ENV.lower() == "production":
+            if not self.AUTH_TOKEN_SECRET or self.AUTH_TOKEN_SECRET == "recommendme-dev-secret-change-me":
+                raise ValueError("AUTH_TOKEN_SECRET must be explicitly set to a non-default value in production")
+        return self
 
     @classmethod
     def settings_customise_sources(

@@ -65,7 +65,12 @@ async def login(payload: LoginRequest) -> AuthLoginResponse:
     identifier = (payload.identifier or "").strip()
     password = payload.password or ""
 
-    if settings.APP_ENV.lower() != "production" and (not identifier or not password):
+    allow_dev_bypass = (
+        settings.APP_ENV.lower() == "development"
+        and settings.ALLOW_DEV_LOGIN_BYPASS
+    )
+
+    if allow_dev_bypass and (not identifier or not password):
         user = auth_service.get_or_create_dev_user(identifier=identifier or None)
     else:
         try:
@@ -104,14 +109,21 @@ async def login(payload: LoginRequest) -> AuthLoginResponse:
 
 @router.post("/forgot-password", response_model=PasswordResetResponse)
 async def forgot_password(payload: ForgotPasswordRequest) -> PasswordResetResponse:
+    settings = get_settings()
+    generic_message = "If an account exists, reset instructions were sent."
+
     user = auth_service.find_user_by_identifier(payload.identifier)
     if not user:
-        raise HTTPException(status_code=404, detail="No account found for that identifier.")
+        return PasswordResetResponse(message=generic_message)
 
     reset_token = str(uuid.uuid4())
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     profile_store.set_reset_token(user_id=user.user_id, reset_token=reset_token, expires_at=expires_at)
-    return PasswordResetResponse(message="Reset token generated.", reset_token=reset_token)
+
+    if settings.APP_ENV.lower() != "production":
+        return PasswordResetResponse(message="Reset token generated for development.", reset_token=reset_token)
+
+    return PasswordResetResponse(message=generic_message)
 
 
 @router.post("/reset-password", response_model=PasswordResetResponse)

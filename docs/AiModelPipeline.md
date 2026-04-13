@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # AI Model Pipeline
 
 ## Purpose
@@ -15,7 +26,7 @@ Why it exists:
 - Avoids low-quality recommendations when user intent/context is under-specified.
 
 How it works:
-1. Build vagueness prompt from query and optional domain hint.
+1. Build vagueness prompt from query and optional conversation context.
 2. Try providers in fallback order.
 3. Parse response into strict classification structure.
 4. If vague, return follow-up questions.
@@ -40,12 +51,12 @@ How it works:
 - Computes sufficiency score.
 - Returns next-step plan (sufficient or more questions).
 
-## Stage 3: Category And Product-Type Reasoning
+## Stage 3: Category And Product Reasoning
 
 Module: `app/services/recommender.py`
 
 What it does:
-- Produces one display category and up to 10 product types with descriptions.
+- Produces recommendation categories, summary reasoning, and prioritized product candidates.
 
 Why it exists:
 - Separates semantic recommendation planning from listing retrieval.
@@ -75,7 +86,7 @@ How it works:
 1. Build search query per product type with context signals.
 2. Try SerpAPI with bounded retries.
 3. On failures/quota exhaustion, fall back to direct Google fetch.
-4. Return product list or empty list/degraded response path.
+4. Return product list, skip failing categories, or emit search-link fallback cards.
 
 ## Stage 5: Chat Follow-Up Answering
 
@@ -102,12 +113,13 @@ How it works:
 
 ## Outputs
 - Clarification question payloads.
-- Recommendation payload with category and product types.
-- Product card lists with data-source and degradation metadata.
+- Recommendation payload with categories and product cards.
 - Chat follow-up responses.
 
 ## Pipeline Constraints (Code-Evident)
 
-- Product type count is capped (`[:10]` in query orchestration).
+- Recommendation categories are capped (`[:5]` in query orchestration).
+- Product cards are capped per category (`MAX_PRODUCTS_PER_CATEGORY = 10`).
 - Product fetch attempts are bounded and may degrade gracefully.
 - Provider failure paths return retry/busy semantics instead of hard process failure.
+

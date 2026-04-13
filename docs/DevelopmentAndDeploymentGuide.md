@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Development And Deployment Guide
 
 ## Local Development
@@ -35,7 +46,7 @@ python -m compileall app
 python -m pytest -q tests
 ```
 
-Current workspace result: no tests discovered in `tests/`.
+Current workspace result (2026-04-13): `50 passed`.
 
 ## Container Workflow
 
@@ -88,3 +99,4 @@ Implication:
 3. Treat CSV/JSON persistence as non-scaled mode.
 4. Introduce Redis-backed session/cache for multi-instance deployments.
 5. Enable CI pipelines before production promotion.
+

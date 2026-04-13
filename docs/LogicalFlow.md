@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Logical Flow
 
 ## Startup Flow
@@ -85,3 +96,4 @@
 - Middleware injects correlation id and request timing logs.
 - Global exception handlers standardize error responses.
 - CORS policy is applied globally from settings.
+

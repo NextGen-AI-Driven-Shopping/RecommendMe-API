@@ -1,32 +1,24 @@
 """
-Vagueness check prompt template — Tier 1.
+Vagueness check prompt template — Step 2 of Flow.md.
 
-Instructs the AI to classify a user query as CLEAR or VAGUE and, when
-VAGUE, generate questions that are *derived from the exact words in the
-query* — never from a generic template.
-
-Tier system:
-    Tier 1 (this file) — Binary CLEAR/VAGUE classification + follow-up gen.
-    Tier 2             — Intent clustering and attribute extraction (CLEAR).
-    Tier 3             — Full recommendation pipeline with ranked results.
+Classifies user query into 4 states:
+  CLEAR       → Proceed directly to Question Engine (Step 3)
+  VAGUE       → Pre-clarification question (Step 2.5)
+  AMBIGUOUS   → Pre-clarification question (Step 2.5)
+  OUT_OF_SCOPE → Graceful decline
 
 API target: OpenAI-compatible chat format (system message as first item).
-Anthropic callers should hoist the system content to the top-level param.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from app.core.logger import get_logger
 from app.utils.prompt_utils import build_chat_messages
 
 logger = get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
 
 Role = Literal["user", "assistant"]
 Messages = list[dict[str, str]]
@@ -43,111 +35,76 @@ class Message:
         return {"role": self.role, "content": self.content}
 
 
-# ---------------------------------------------------------------------------
-# Prompt
-# ---------------------------------------------------------------------------
-
 SYSTEM_PROMPT = """\
 You are a precise product-query analyst. Your job:
 
-  1. Decide if a shopping query is CLEAR or VAGUE.
-  2. If VAGUE, write exactly 1 follow-up question that is SPECIFIC to the
-     exact words the user typed — never generic boilerplate.
+  1. Classify a user query as CLEAR, VAGUE, AMBIGUOUS, or OUT_OF_SCOPE.
+  2. Return a JSON response.
 
 ────────────────────────────────────────────
 OUTPUT FORMAT  (return ONLY valid JSON, zero markdown)
 ────────────────────────────────────────────
-CLEAR → {"classification": "CLEAR"}
-VAGUE → {"classification": "VAGUE", "follow_ups": ["Q1"]}
+
+CLEAR →
+  {"classification": "CLEAR"}
+
+VAGUE →
+  {"classification": "VAGUE"}
+
+AMBIGUOUS →
+  {"classification": "AMBIGUOUS"}
+
+OUT_OF_SCOPE →
+  {"classification": "OUT_OF_SCOPE", "message": "A friendly explanation of why this is out of scope."}
 
 ────────────────────────────────────────────
-WHEN IS A QUERY CLEAR?
-────────────────────────────────────────────
-A query is CLEAR when it contains ALL of:
-  • A concrete product/category  (e.g. "trail running shoes", "noise-cancelling headphones")
-  • At least ONE of:
-      – primary use-case         (gaming, hiking, office work …)
-      – environment / terrain    (rain, high-altitude, indoors …)
-      – a meaningful constraint  (under ₹5000, waterproof, lightweight …)
-      – a meaningful preference  (wireless, size M, carbon-fibre frame …)
-
-Single-word or two-word bare nouns with no qualifiers are always VAGUE.
-
-────────────────────────────────────────────
-HOW TO WRITE GOOD FOLLOW-UP QUESTIONS
-────────────────────────────────────────────
-RULE 1 — ANCHOR TO THE QUERY'S OWN WORDS
-  Every question must reference a specific noun, verb, or adjective the
-  user actually typed. Never ask a question that would fit any shopping
-  query (e.g. "What's your budget?" as a first question).
-
-RULE 2 — PRIORITY ORDER
-  ① Narrow the activity / use-case   (most discriminating)
-  ② Narrow the environment / context
-  ③ Narrow a decision-fork specific to that product space
-
-RULE 3 — BINARY OR SMALL-SET OPTIONS WHERE HELPFUL
-  Offering 2–3 concrete options inside the question is often better than
-  asking an open-ended one.
-  Good: "Will these be for road running, trail running, or gym use?"
-  Bad:  "What will you use them for?"
-
-RULE 4 — LENGTH  ≤ 15 words per question, conversational tone.
-
-RULE 5 — NEVER ASK THESE AS Q1
-  ✗ "What is your budget?"
-  ✗ "What brand do you prefer?"
-  ✗ "Solo or group?"
-  ✗ "Male or female?" (unless the query mentions gender)
-
-────────────────────────────────────────────
-WORKED EXAMPLES  (study derivation logic, do NOT copy verbatim)
+CLASSIFICATION DEFINITIONS
 ────────────────────────────────────────────
 
-Query: "trekking"
-→ VAGUE
-  The word "trekking" tells us little about terrain or gear scope.
-  Q1: "Are you planning day hikes, multi-day trips, or high-altitude expeditions?"
+CLEAR:
+  The query contains a concrete product or category PLUS at least one of:
+  - Primary use-case (gaming, hiking, office, etc.)
+  - Environment / terrain (rain, indoor, mountain, etc.)
+  - A meaningful constraint (under ₹5000, waterproof, lightweight, etc.)
+  - A meaningful preference (wireless, size M, brand preference, etc.)
 
-  ❌ BAD (do NOT produce):
-  "What type of trekking?" — echoes the query word, narrows nothing
-  "Which region or climate?" — generic enough to fit any outdoor query
+VAGUE:
+  The query mentions a real product/need but lacks sufficient context.
+  Single-word or two-word bare nouns without qualifiers are always VAGUE.
+  Examples: "headphones", "laptop", "shoes", "camping gear"
 
-Query: "running shoes"
-→ VAGUE
-  Q1: "Road running, trail running, or track/gym use?"
+AMBIGUOUS:
+  The query has multiple valid interpretations that would lead to
+  fundamentally different product recommendations.
+  Example: "something for my trip" (business trip? vacation? road trip?)
 
-Query: "headphones"
-→ VAGUE
-  Q1: "Main use — commuting, studio monitoring, gaming, or work calls?"
-
-Query: "laptop"
-→ VAGUE
-  Q1: "Primary workload — dev/coding, video editing, gaming, or general use?"
-
-Query: "camping tent"
-→ VAGUE
-  Q1: "Solo, 2-person, or family/group tent?"
-
-Query: "gaming laptop under ₹80,000"
-→ CLEAR  (product + use-case + price constraint)
-
-Query: "waterproof trail running shoes size 10"
-→ CLEAR  (product + terrain + spec + size)
+OUT_OF_SCOPE:
+  The query cannot produce product recommendations at all.
+  Examples: "what's the weather today", "tell me a joke", "explain quantum physics"
+  In this case, add a "message" field with a friendly decline.
 
 ────────────────────────────────────────────
-INTERNAL DERIVATION CHECKLIST (do not output this)
+EXAMPLES
 ────────────────────────────────────────────
-Before writing each question ask:
-  • Which specific word(s) in the query prompted this question?
-  • Does the answer meaningfully fork the product space?
-  • Could this question apply to almost any shopping query? → rewrite if yes.
+
+"gaming laptop under ₹80,000"
+  → {"classification": "CLEAR"}
+
+"waterproof trail running shoes size 10"
+  → {"classification": "CLEAR"}
+
+"headphones"
+  → {"classification": "VAGUE"}
+
+"something for my trip"
+  → {"classification": "AMBIGUOUS"}
+
+"tell me a joke"
+  → {"classification": "OUT_OF_SCOPE", "message": "I'm a product recommendation assistant! I can help you find the perfect products. Try asking me something like 'best running shoes for marathons' or 'laptop for video editing'."}
+
+"what time is it"
+  → {"classification": "OUT_OF_SCOPE", "message": "I specialize in product recommendations. Ask me about any product you're looking for and I'll help you find the best options!"}
 """
-
-
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
 
 
 def build_vagueness_prompt(
@@ -157,12 +114,8 @@ def build_vagueness_prompt(
     """
     Build the message list for a vagueness-classification LLM call.
 
-    The system prompt is injected as the first message (role ``"system"``),
-    compatible with the OpenAI chat format.  Anthropic callers should pop it
-    out and pass it as the top-level ``system`` parameter.
-
     Args:
-        query:   The raw user search string.  Must be non-empty.
+        query:   The raw user search string. Must be non-empty.
         context: Optional prior conversation turns for multi-turn context.
 
     Returns:

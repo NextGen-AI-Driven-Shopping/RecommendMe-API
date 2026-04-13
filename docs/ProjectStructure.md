@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Project Structure
 
 ## Scope
@@ -174,13 +185,11 @@ RecommendMe-API/
 | `app/services/chat_mode.py` | chat follow-up answering logic | contextual post-recommendation dialogue |
 | `app/services/clarification.py` | clarification planning and scoring | structured question strategy |
 | `app/services/dynamic_intent_analyzer.py` | dynamic signal extraction | domain-aware follow-up generation |
-| `app/services/intent_engine.py` | local intent/domain classifier | fast pre-LLM signal detection |
 | `app/services/products.py` | product fetching + fallback | external product retrieval pipeline |
 | `app/services/profile_store.py` | JSON profile persistence | profile CRUD storage layer |
 | `app/services/ranking.py` | ranking pipeline module | legacy/additional ranking path |
-| `app/services/recommender.py` | provider fallback recommendation planner | category/product-type generation orchestrator |
+| `app/services/recommender.py` | provider fallback recommendation planner | category/product recommendation orchestration |
 | `app/services/suggestions.py` | suggestion response wrappers | legacy/additional response composition path |
-| `app/services/system_state.py` | process-level system flags | shared runtime state (e.g., SerpAPI availability) |
 | `app/services/vagueness.py` | vagueness classification service | clarification-vs-recommendation branching |
 
 ## `app/utils/`
@@ -245,3 +254,4 @@ RecommendMe-API/
 
 - `tests/` exists but no test files were found in this workspace snapshot.
 - Legacy modules (`app/services/ranking.py`, `app/services/suggestions.py`) exist but are not on the active `POST /v1/query` route path.
+

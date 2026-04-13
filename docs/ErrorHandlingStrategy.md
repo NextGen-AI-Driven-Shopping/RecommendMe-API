@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Error Handling Strategy
 
 ## Design Intent
@@ -32,7 +43,7 @@ Examples:
 
 - Invalid input -> `ValidationException`.
 - Provider orchestration failure -> translated to `AIServiceException` with busy message.
-- Product-fetch failures are downgraded to degraded recommendation payloads where possible.
+- Product/category fetch failures are skipped when possible; request fails only if no category can produce live or fallback items.
 
 ### Auth Routes
 
@@ -68,7 +79,7 @@ Behavior:
 
 - SerpAPI 429 marks process-level SerpAPI unavailable.
 - SerpAPI auth/HTTP/network failures fall back to direct Google fetch.
-- Full fetch failure returns `None`, and caller decides degraded response strategy.
+- Full fetch failure returns `None`, and caller decides whether to skip category or emit search-link fallback cards.
 
 ## Global Exception Handling
 
@@ -92,4 +103,5 @@ Registered in `register_exception_handlers(app)`:
 
 - Rate-limit exception class exists, but active rate-limit middleware is not wired in current runtime path.
 - Session cleanup is opportunistic on access (no background cleanup worker).
-- Some legacy modules are import-inconsistent and not in active route paths.
+- Request deduplication cache is in-memory and process-local, so dedupe does not span multiple API instances.
+

@@ -4,8 +4,13 @@ FastAPI backend for conversational recommendations.
 
 ## Canonical Documentation
 
-- Backend reference (source of truth): `docs/BackendCodebaseReference.md`
-- Documentation audit report: `docs/DocumentationValidationReport.md`
+- Backend reference (source of truth):
+	- `docs/backend_overview.md`
+	- `docs/architecture.md`
+	- `docs/api_reference.md`
+	- `docs/data_flow.md`
+	- `docs/ai_integration.md`
+- Documentation index: `docs/DocsIndex.md`
 
 ## Quick Start
 
@@ -34,7 +39,7 @@ Tests:
 python -m pytest -q tests
 ```
 
-Current repository state: `tests/` contains no test files in this workspace.
+Current repository state: `tests/` directory exists but is empty in this workspace snapshot.
 
 ## API Surface Summary
 
@@ -45,7 +50,6 @@ System:
 
 Recommendation:
 - `POST /v1/query`
-- `POST /v1/query/sufficiency_check`
 - `GET /v1/sessions/{session_id}`
 - `GET /v1/sessions/{session_id}/exists`
 - `POST /v1/chat/mode`

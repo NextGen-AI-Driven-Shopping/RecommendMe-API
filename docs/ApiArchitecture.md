@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # API Architecture
 
 ## Purpose
@@ -83,7 +94,7 @@ Architecture implication:
 
 - Provider fallback chain for recommendation planning.
 - Product retrieval fallback from SerpAPI to direct Google fetch.
-- Degraded response signaling through `QueryResponse.data_source` and `QueryResponse.degraded`.
+- Category/product fetch failures are handled with category skipping and search-link fallback cards where possible.
 
 ## Security Boundaries
 
@@ -94,3 +105,4 @@ Protected by bearer dependency:
 - `POST /v1/profile/avatar/upload`
 
 Public endpoints remain token-free by design.
+

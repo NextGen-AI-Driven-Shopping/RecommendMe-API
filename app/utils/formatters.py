@@ -1,77 +1,150 @@
 """
-Response formatting utilities.
+Response formatting utilities — aligned to Flow.md.
 
-Assembles final QueryResponse objects from ranked product data and
-handles optional affiliate URL tag injection for all outbound product links.
-
-Public API:
-  build_recommendation_response()  — wraps ranked results in a QueryResponse.
-  build_clarification_response()   — wraps a follow-up question in a QueryResponse.
+Assembles final QueryResponse objects for all pipeline states.
 """
 
-from app.models.responses import CategoryResult, ProductCard, QueryResponse
+from __future__ import annotations
+
+from typing import List, Optional
+
+from app.models.responses import (
+    ProductItemResponse,
+    ProductTypeResponse,
+    QueryResponse,
+    QuestionOptionResponse,
+)
+from app.models.internal import (
+    ProductType,
+    QuestionWithOptions,
+    RecommendationResult,
+)
 
 
 def build_recommendation_response(
-    categories: list[CategoryResult],
+    *,
+    result: RecommendationResult,
     session_id: str | None = None,
     summary: str | None = None,
 ) -> QueryResponse:
     """
-    Assemble a successful recommendations response.
+    Assemble a successful recommendations response from the pipeline result.
 
-    Args:
-        categories: Ranked product results grouped by category.
-        session_id: Active session ID, if any.
-        summary: AI reasoning text shown to the user above the product list.
-
-    Returns:
-        QueryResponse with status='recommendations'.
+    Converts internal models to API response models.
     """
+    product_type_responses = []
+    for pt in result.product_types:
+        items = [
+            ProductItemResponse(
+                product_name=item.product_name,
+                image_url=item.image_url,
+                price_inr=item.price_inr,
+                short_description=item.short_description,
+                buy_link=item.buy_link,
+                rating=item.rating,
+                brand=item.brand,
+                reviews_count=item.reviews_count,
+                delivery_info=item.delivery_info,
+                availability=item.availability,
+                source=item.source,
+            )
+            for item in pt.valid_items
+        ]
+        product_type_responses.append(
+            ProductTypeResponse(
+                product_type=pt.product_type,
+                description=pt.description,
+                product_items=items,
+                serp_error=pt.serp_error,
+                serp_error_message=pt.serp_error_message,
+            )
+        )
+
     return QueryResponse(
         status="recommendations",
+        category=result.category,
+        product_types=product_type_responses,
         summary=summary,
-        categories=categories,
         session_id=session_id,
     )
 
 
 def build_clarification_response(
-    message_or_follow_ups: str | list[str],
+    *,
+    questions: list[QuestionWithOptions],
     session_id: str | None = None,
-    clarification_round: int | None = None,
-    asked_questions: int | None = None,
-    max_total_questions: int | None = None,
-    sufficiency_score: float | None = None,
+    clarification_round: int = 1,
+    asked_questions: int = 0,
+    max_total_questions: int = 5,
 ) -> QueryResponse:
     """
-    Assemble a clarification-needed response.
-
-    Args:
-        message_or_follow_ups: Either a clarification message string or list of follow-up questions.
-        session_id: Active session ID, if any.
-
-    Returns:
-        QueryResponse with status='clarification_needed'.
+    Assemble a clarification-needed response with questions and options.
     """
-    if isinstance(message_or_follow_ups, str):
-        # Single message string
-        message = message_or_follow_ups
-        questions = None
-    else:
-        # List of follow-up questions - join them into a message
-        questions = message_or_follow_ups
-        message = "\n".join([f"• {q}" for q in questions]) if questions else None
-    
+    question_responses = [
+        QuestionOptionResponse(
+            question=q.question,
+            options=q.options,
+        )
+        for q in questions
+    ]
+
+    # Build a message from all questions
+    message = "\n".join(f"• {q.question}" for q in questions)
+
     return QueryResponse(
         status="clarification_needed",
         message=message,
-        questions=questions,
+        questions=question_responses,
         session_id=session_id,
         clarification_round=clarification_round,
         asked_questions=asked_questions,
         max_total_questions=max_total_questions,
-        sufficiency_score=sufficiency_score,
     )
 
 
+def build_preclarification_response(
+    *,
+    question: QuestionWithOptions,
+    session_id: str | None = None,
+) -> QueryResponse:
+    """Assemble a pre-clarification response (Step 2.5)."""
+    return QueryResponse(
+        status="pre_clarification",
+        message=question.question,
+        questions=[QuestionOptionResponse(
+            question=question.question,
+            options=question.options,
+        )],
+        session_id=session_id,
+        clarification_round=0,
+        asked_questions=0,
+        max_total_questions=5,
+    )
+
+
+def build_out_of_scope_response(
+    *,
+    message: str,
+    session_id: str | None = None,
+) -> QueryResponse:
+    """
+    Assemble an out-of-scope response when the query cannot produce recommendations.
+    """
+    return QueryResponse(
+        status="out_of_scope",
+        message=message,
+        session_id=session_id,
+    )
+
+
+def build_error_response(
+    *,
+    message: str,
+    session_id: str | None = None,
+) -> QueryResponse:
+    """Assemble an error response with a user-friendly message."""
+    return QueryResponse(
+        status="error",
+        message=message,
+        session_id=session_id,
+    )

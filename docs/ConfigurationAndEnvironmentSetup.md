@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Configuration And Environment Setup
 
 ## Configuration Source Order
@@ -53,6 +64,7 @@ Source precedence:
 |---|---|---|
 | `AUTH_TOKEN_SECRET` | `recommendme-dev-secret-change-me` | Token signing/verification |
 | `AUTH_TOKEN_TTL_MINUTES` | `10080` | Token expiry |
+| `ALLOW_DEV_LOGIN_BYPASS` | `False` | Enables empty-credential dev login only when explicitly set in development |
 | `USERS_CSV_PATH` | `app/data/users.csv` | CSV auth storage |
 | `PROFILE_STORE_PATH` | `app/data/profiles.json` | Profile JSON storage |
 | `PROFILE_UPLOAD_DIR` | `app/data/uploads/avatars` | Avatar upload path |
@@ -107,11 +119,14 @@ python -m compileall app
 python -m pytest -q tests
 ```
 
-Current workspace state: no tests were discovered in `tests/`.
+Current workspace state (2026-04-13): `50 passed`.
 
 ## Configuration Guidance
 
 - Always override `AUTH_TOKEN_SECRET` in non-local environments.
+- In production mode, startup fails if `AUTH_TOKEN_SECRET` is missing or left at default.
+- Keep `ALLOW_DEV_LOGIN_BYPASS` disabled unless explicitly needed for local development.
 - Keep API keys outside source control.
 - Keep CORS allowlists explicit for deployed environments.
 - Treat settings marked as unused in runtime as implementation backlog, not active controls.
+

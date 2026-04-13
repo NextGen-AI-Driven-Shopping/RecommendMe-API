@@ -1,4 +1,4 @@
-"""Post-results chat mode route handlers."""
+"""Post-results chat mode route handlers (Step 8 of Flow.md)."""
 
 from __future__ import annotations
 
@@ -33,14 +33,17 @@ async def chat_mode_followup(payload: ChatModeRequest) -> ChatModeResponse:
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    categories_payload = session.get("categories")
-    if not categories_payload:
-        latest_response = session.get("latest_response") or {}
-        categories_payload = latest_response.get("categories")
-
-    if not categories_payload:
+    # Verify recommendation context exists
+    has_context = bool(
+        session.get("product_types")
+        or session.get("categories")
+        or (session.get("latest_response") or {}).get("product_types")
+        or (session.get("latest_response") or {}).get("categories")
+    )
+    if not has_context:
         raise HTTPException(status_code=400, detail="No recommendation context found for this session.")
 
+    # Get user profile for personalization
     profile_context = None
     user_id = session.get("user_id")
     if user_id:
@@ -48,9 +51,10 @@ async def chat_mode_followup(payload: ChatModeRequest) -> ChatModeResponse:
         if profile:
             profile_context = profile.to_public_dict()
 
+    # Pass full session data to chat mode service
     answer = await answer_chat_followup(
         question=payload.user_message,
-        categories_payload=categories_payload,
+        session_data=session,
         profile_context=profile_context,
     )
 

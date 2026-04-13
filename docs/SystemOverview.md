@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # System Overview
 
 ## Purpose
@@ -70,3 +81,4 @@ At runtime, it performs four primary responsibilities:
 Current implementation is optimized for single-instance or early-stage deployments.
 
 Distributed-state behavior (shared session/cache persistence across multiple instances) is not implemented as a default runtime path.
+

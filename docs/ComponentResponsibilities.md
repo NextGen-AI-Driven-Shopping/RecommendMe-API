@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Component Responsibilities
 
 ## Scope
@@ -216,17 +227,16 @@ This document details major backend components/files and explains:
 - Purpose: product listing retrieval.
 - Justification: isolates external product source behavior and fallback logic.
 - Internal logic:
-  - dedupe by category/query cache key.
-  - SerpAPI primary call with bounded retries.
-  - process-level disable on quota exhaustion.
-  - direct Google fallback if needed.
+  - SerpAPI primary call for Google Shopping listings.
+  - fallback to direct Google shopping search when SerpAPI fails.
+  - URL normalization and affiliate-tag injection.
 - Connections:
-  - `app/services/system_state.py`
+  - `app/config/settings.py`
   - `app/models/responses.py`
 - Key symbols:
   - `fetch_products`
-  - `_try_serpapi`
   - `_fetch_products_from_google`
+  - `inject_affiliate_tag`
 - Inputs/Outputs:
   - Input: product type/category and query context.
   - Output: list of `ProductCard` or `None`.
@@ -300,20 +310,22 @@ This document details major backend components/files and explains:
   - Input: user question + context payload.
   - Output: assistant answer string.
 
-## `app/services/intent_engine.py`
+## `app/services/vagueness.py`
 
-- Purpose: local domain/intent classification.
-- Justification: low-latency signal extraction before LLM calls.
+- Purpose: classify query as `CLEAR`, `VAGUE`, or `RETRY`.
+- Justification: routes under-specified queries into clarification before recommendation generation.
 - Internal logic:
-  - keyword signal matching and confidence scoring.
+  - build prompt payload and execute provider fallback chain.
+  - parse structured response and normalize follow-up questions.
+  - fall back to dynamic analyzer when model output is ambiguous.
 - Connections:
   - consumed by query route.
 - Key symbols:
-  - `IntentResult`
-  - `classify_intent`
+  - `classify_vagueness`
+  - `VaguenessResult`
 - Inputs/Outputs:
   - Input: query text.
-  - Output: domain/intent classification object.
+  - Output: classification result with optional follow-up questions.
 
 ## `app/services/dynamic_intent_analyzer.py`
 
@@ -346,7 +358,7 @@ This document details major backend components/files and explains:
 - Key symbols:
   - `BaseCategoryProvider`
   - `CategoryReasoningResult`
-  - `ProductTypeInfo`
+  - `RecommendedProductInfo`
   - provider exception types.
 - Inputs/Outputs:
   - Input: provider raw payload dict.
@@ -367,7 +379,7 @@ This document details major backend components/files and explains:
 - Key symbols:
   - provider classes: `GroqProvider`, `OpenAIProvider`, `GeminiProvider`, `OllamaProvider`.
 - Inputs/Outputs:
-  - Input: query/context/domain_hint.
+  - Input: query/context.
   - Output: `CategoryReasoningResult`.
 
 ## Infrastructure And Utilities
@@ -433,3 +445,4 @@ This document details major backend components/files and explains:
 - Inputs/Outputs:
   - Input: request lifecycle events and exception events.
   - Output: structured logs, standardized error payloads, authenticated user context.
+

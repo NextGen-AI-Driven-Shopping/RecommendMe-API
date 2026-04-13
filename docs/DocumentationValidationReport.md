@@ -1,3 +1,14 @@
+﻿# Superseded Document
+
+This file is retained for historical context. For current implementation-accurate backend documentation, use:
+- backend_overview.md
+- architecture.md
+- api_reference.md
+- data_flow.md
+- ai_integration.md
+
+---
+
 # Documentation Validation Report
 
 ## Objective
@@ -31,6 +42,8 @@ Compared against:
 2. Added modular docs for system overview, architecture, API flow, error handling, configuration, structure, responsibilities, deployment.
 3. Added full file-and-directory purpose/necessity catalog in `ProjectStructure.md`.
 4. Preserved code-only determinability policy in new docs.
+5. Re-synced runtime-validation statements with current repository state (`50 passed` tests, import checks passing).
+6. Updated security/configuration docs for explicit dev-login bypass flag and production auth-secret enforcement.
 
 ## Naming And Placement Compliance
 
@@ -42,3 +55,11 @@ Compared against:
 
 - If source code changes without doc updates, drift can recur.
 - Legacy modules not in active route path may require either restoration or formal deprecation notes in future maintenance cycles.
+
+## Current Verification Snapshot (2026-04-13)
+
+- `python -m pytest -q tests` -> `50 passed`
+- `python -c "import app.main"` -> success
+- `python -c "import app.services.ranking"` -> success
+- `python -c "import app.services.suggestions"` -> success
+

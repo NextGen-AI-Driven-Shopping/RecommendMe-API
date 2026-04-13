@@ -118,7 +118,7 @@ class ClarificationPlanner:
             query=combined,
             signals=signals,
             missing=missing,
-            max_questions=1,
+            max_questions=5,
         )
 
         additional: list[str] = []
