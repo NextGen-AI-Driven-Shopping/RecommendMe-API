@@ -40,7 +40,6 @@ from typing import List, Optional
 
 from app.core.logger import get_logger
 from app.models.internal import ReasoningResult
-from app.services.recommender import get_recommendations
 
 logger = get_logger(__name__)
 
@@ -424,7 +423,13 @@ class SuggestionsService: # The main service class to call from route handlers f
         # On any failure we catch the exception and return an empty response
         # so the route handler is never left with an unhandled crash.
         try:
-            reasoning: ReasoningResult = await get_recommendations(
+            from app.services.recommender import get_recommendations as _get_recommendations
+        except (ImportError, AttributeError) as exc:
+            self._logger.error("Recommendation pipeline function unavailable: %s", exc)
+            return SuggestionResponse(raw_query=user_message)
+
+        try:
+            reasoning: ReasoningResult = await _get_recommendations(
                 user_message=user_message,
                 conversation_history=history,
             )

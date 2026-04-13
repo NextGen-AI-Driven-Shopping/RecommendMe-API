@@ -7,6 +7,7 @@ from app.providers.base import (
     ProviderError,
     ProviderResponseError,
     ProviderUnavailableError,
+    RecommendationPlanResult,
 )
 from app.providers.gemini_provider import GeminiProvider
 from app.providers.groq_provider import GroqProvider
@@ -20,6 +21,7 @@ __all__ = [
     "ProviderError",
     "ProviderResponseError",
     "ProviderUnavailableError",
+    "RecommendationPlanResult",
     "GeminiProvider",
     "GroqProvider",
     "OpenAIProvider",

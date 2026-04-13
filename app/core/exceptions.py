@@ -67,6 +67,22 @@ class ValidationException(BaseAPIException):
         )
 
 
+class ProviderError(Exception):
+    """Raised when an upstream AI provider returns an operational error."""
+
+
+class ProviderUnavailableError(ProviderError):
+    """Raised when an upstream AI provider is unavailable or misconfigured."""
+
+
+class AllProvidersFailedError(ProviderError):
+    """Raised when all configured provider attempts fail."""
+
+    def __init__(self, message: str, detail: str | None = None):
+        super().__init__(message)
+        self.detail = detail
+
+
 # --------------------------------------------------------------------------- #
 # Exception handlers
 # --------------------------------------------------------------------------- #

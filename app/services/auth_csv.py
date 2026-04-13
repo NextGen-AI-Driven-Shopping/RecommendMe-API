@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import os
 import re
 import threading
@@ -242,7 +243,7 @@ class CsvAuthService:
             raise AuthNotFoundError("No account found for this email/phone.")
 
         expected_hash = self._hash_password(password, found_user.password_salt)
-        if expected_hash != found_user.password_hash:
+        if not hmac.compare_digest(expected_hash, found_user.password_hash):
             raise AuthCredentialsError("Invalid password.")
 
         return found_user.to_public_user()

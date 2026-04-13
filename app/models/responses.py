@@ -1,12 +1,7 @@
 """
 Response models for the RecommendMe API.
 
-Defines the shape of every outbound JSON response served by the API.
-
-Flow.md hierarchy:
-    Category  (display label — exactly 1 per session)
-      └── Product Type  (functional class — drives SERP query, max 10)
-            └── Product Items  (real listings — fetched from SERP per Product Type, up to 10)
+Aligned to Flow.md — defines the shape of every outbound JSON response.
 """
 
 from typing import List, Literal, Optional, Union
@@ -14,168 +9,107 @@ from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 
-class ProductCard(BaseModel):
-    """A single product recommendation card sourced from SERP (never AI-generated)."""
+# ── Product Item Response ────────────────────────────────────────────────────
 
-    title: str
-    """Product name from SERP — never AI-generated (Flow.md §37)."""
 
-    price: Optional[str] = None
-    """Price in INR. Required for card rendering."""
+class ProductItemResponse(BaseModel):
+    """A single product item from SERP, shown as a card."""
 
-    url: str
-    """Buy link — opens in new tab."""
-
-    image_url: Optional[str] = None
-    """Product image URL for card display."""
-
-    source: Optional[str] = None
-    """Source marketplace / retailer."""
-
+    product_name: str
+    image_url: str = ""
+    price_inr: str = ""
+    short_description: str = ""
+    buy_link: str = ""
     rating: Optional[float] = None
-    """Star rating when available."""
-
-    reviews: Optional[int] = None
-    """Review count when available."""
-
-    explanation: Optional[str] = None
-    """Short description from listing or AI fallback."""
-
-    label: Optional[str] = None
-    """Rank label (e.g. 'Best Choice', 'Top 2')."""
-
     brand: Optional[str] = None
-    """Brand name when available."""
-
+    reviews_count: Optional[int] = None
     delivery_info: Optional[str] = None
-    """Delivery information when available."""
-
     availability: Optional[str] = None
-    """In stock / Out of stock when available."""
+    source: Optional[str] = None
 
 
-class ProductTypeResult(BaseModel):
-    """One product type section with its SERP-fetched product items.
+# ── Product Type Response ────────────────────────────────────────────────────
 
-    Flow.md §Data Hierarchy:
-    - product_type: functional class name — used as the SERP query basis.
-    - description: unique 2–3 sentence context-aware explanation of WHY this
-      product type is needed in the user's specific situation.
-    - product_items: real-world listings fetched from SERP (up to 10).
-    """
+
+class ProductTypeResponse(BaseModel):
+    """A functional product class with its description and SERP-sourced items."""
 
     product_type: str
-    """Functional class name (e.g. 'Waterproof Trekking Shoes'). Used as SERP query."""
-
-    description: str
-    """Unique 2–3 sentence description specific to the user's context."""
-
-    product_items: List[ProductCard] = Field(default_factory=list)
-    """Real listings fetched from SERP (0–10). Empty when SERP failed for this type."""
-
-    serp_failed: bool = False
-    """True when SERP fetch failed for this product type. Frontend shows failure banner."""
-
-    # ── Backward compat aliases ───────────────────────────────────────────────
-    @property
-    def products(self) -> List[ProductCard]:
-        """Alias for product_items — used by legacy frontend normalizer."""
-        return self.product_items
-
-    @property
-    def why_needed(self) -> str:
-        """Alias for description — used by legacy frontend normalizer."""
-        return self.description
-
-    @property
-    def category(self) -> str:
-        """Alias for product_type — used by legacy frontend normalizer."""
-        return self.product_type
-
-    @property
-    def tagline(self) -> Optional[str]:
-        """Legacy compat — returns None."""
-        return None
+    description: str = ""
+    product_items: List[ProductItemResponse] = Field(default_factory=list)
+    serp_error: bool = False
+    serp_error_message: Optional[str] = None
 
 
-# ── Keep old name as alias so existing imports don't break ──────────────────
-CategoryResult = ProductTypeResult
+# ── Question with Options ────────────────────────────────────────────────────
+
+
+class QuestionOptionResponse(BaseModel):
+    """A follow-up question with optional selectable answer options."""
+
+    question: str
+    options: List[str] = Field(default_factory=list)
+
+
+# ── Query Response ───────────────────────────────────────────────────────────
 
 
 class QueryResponse(BaseModel):
-    """Response body for POST /v1/query."""
+    """
+    Response body for POST /v1/query.
 
-    status: Literal["recommendations", "clarification_needed"] = Field(
-        ...,
-        description="'recommendations' or 'clarification_needed'",
-    )
+    Covers all pipeline states: clarification, recommendations, out of scope.
+    """
+
+    status: Literal[
+        "clarification_needed",
+        "recommendations",
+        "out_of_scope",
+        "pre_clarification",
+        "error",
+    ] = Field(..., description="Current pipeline state.")
+
+    # ── Clarification fields ──
     message: Optional[str] = Field(
         None,
-        description="Clarification prompt returned when the query is vague.",
+        description="Message for the user (clarification prompt, error, or out-of-scope explanation).",
     )
-    questions: Optional[List[str]] = Field(
+    questions: Optional[List[QuestionOptionResponse]] = Field(
         None,
-        description="List of specific follow-up questions for the user.",
+        description="Follow-up questions with selectable options.",
     )
-    summary: Optional[str] = Field(
-        None,
-        description="AI reasoning summary shown to the user above the product list.",
-    )
-
-    # ── Flow.md canonical fields ───────────────────────────────────────────────
-    category: Optional[str] = Field(
-        None,
-        description="Display label for the session — exactly 1 per session (Flow.md §21).",
-    )
-    product_types: Optional[List[ProductTypeResult]] = Field(
-        None,
-        description="Up to 10 product type sections, each with description + SERP items (Flow.md §27).",
-    )
-
-    # ── Backward compat — frontend still reads .categories ────────────────────
-    # Populated by the route handler from product_types for old frontend code.
-    categories: Optional[List[ProductTypeResult]] = Field(
-        None,
-        description="Legacy alias for product_types. Deprecated — use product_types instead.",
-    )
-
-    session_id: Optional[str] = None
     clarification_round: Optional[int] = Field(
         None,
-        description="Clarification stage index: 1 for initial 3 questions, 2 for additional stage.",
+        description="1 for Round 1 (3 questions), 2 for Round 2 (2 questions), 0 for pre-clarification.",
     )
     asked_questions: Optional[int] = Field(
         None,
-        description="Number of clarification Q&A pairs gathered so far.",
+        description="Number of Q&A pairs gathered so far.",
     )
     max_total_questions: Optional[int] = Field(
         None,
-        description="Configured maximum clarification question count.",
+        description="Always 5 per Flow.md.",
     )
-    sufficiency_score: Optional[float] = Field(
+
+    # ── Recommendation fields ──
+    category: Optional[str] = Field(
         None,
-        description="Confidence score in [0,1] indicating whether user intent is sufficiently specified.",
+        description="Display-only category label. Exactly 1 per session.",
     )
-    domain: Optional[str] = Field(
+    product_types: Optional[List[ProductTypeResponse]] = Field(
         None,
-        description="Detected domain: 'shopping', 'entertainment', 'software', 'travel', 'food', 'services', 'general'.",
+        description="Product type sections with SERP-sourced items.",
     )
-    intent: Optional[str] = Field(
+    summary: Optional[str] = Field(
         None,
-        description="Detected intent: 'recommendation', 'comparison', 'exploration'.",
+        description="AI reasoning summary shown above the product list.",
     )
-    # ── Data-source transparency fields ───────────────────────────────────────
-    data_source: Optional[Literal["live", "llm_only", "unavailable"]] = Field(
-        None,
-        description=(
-            "Indicates the origin of product data. "
-            "'live'=real listings, 'llm_only'=ideas only, 'unavailable'=all sources failed."
-        ),
-    )
-    degraded: Optional[bool] = Field(
-        None,
-        description="True when the response is partial or sourced from fallback/LLM only.",
-    )
+
+    # ── Session tracking ──
+    session_id: Optional[str] = None
+
+
+# ── Sufficiency Check Response ───────────────────────────────────────────────
 
 
 class SufficiencyCheckResponse(BaseModel):
@@ -185,11 +119,14 @@ class SufficiencyCheckResponse(BaseModel):
     score: float
     asked_questions: int
     max_total_questions: int
-    next_questions: List[str] = Field(default_factory=list)
+    next_questions: List[QuestionOptionResponse] = Field(default_factory=list)
     clarification_round: int = Field(
         ...,
-        description="1 for initial stage, 2 when additional targeted questions are returned.",
+        description="1 for Round 1, 2 for Round 2.",
     )
+
+
+# ── Health Response ──────────────────────────────────────────────────────────
 
 
 class HealthResponse(BaseModel):
@@ -202,6 +139,9 @@ class HealthResponse(BaseModel):
     gemini: Optional[str] = None
     groq: Optional[str] = None
     serpapi: Optional[str] = None
+
+
+# ── Auth Models ──────────────────────────────────────────────────────────────
 
 
 class AuthUser(BaseModel):
@@ -235,16 +175,20 @@ class AuthLoginResponse(BaseModel):
     profile: Optional[dict] = None
 
 
+# ── Session Models ───────────────────────────────────────────────────────────
+
+
 class ChatMessageState(BaseModel):
     """Serialized message stored in a backend session snapshot."""
 
     id: str
     role: Literal["user", "assistant"]
     content: str
-    type: Optional[Literal["followup", "recommendations", "text"]] = None
-    questions: Optional[List[str]] = None
+    type: Optional[Literal["followup", "recommendations", "text", "pre_clarification", "out_of_scope"]] = None
+    questions: Optional[List[QuestionOptionResponse]] = None
     summary: Optional[str] = None
-    categories: Optional[List[ProductTypeResult]] = None
+    category: Optional[str] = None
+    product_types: Optional[List[ProductTypeResponse]] = None
     timestamp: str
 
 
@@ -259,10 +203,31 @@ class ChatSessionState(BaseModel):
     created_at: str
     updated_at: str
     original_query: Optional[str] = None
-    pending_questions: Optional[List[str]] = None
-    current_question_index: Optional[int] = None
+    pending_questions: Optional[List[QuestionOptionResponse]] = None
+    clarification_round: Optional[int] = None
     clarification_answers: Optional[List[dict]] = None
     latest_response: Optional[QueryResponse] = None
+    feedback_count: int = 0
+    saved_count: int = 0
+
+
+class SessionFeedbackResponse(BaseModel):
+    """Response body for recommendation feedback logging."""
+
+    session_id: str
+    message: str
+    feedback_count: int
+
+
+class SessionSaveResponse(BaseModel):
+    """Response body for saving a recommendation snapshot."""
+
+    session_id: str
+    message: str
+    saved_count: int
+
+
+# ── Profile Models ───────────────────────────────────────────────────────────
 
 
 class AvatarOption(BaseModel):
@@ -296,6 +261,9 @@ class AvatarOptionsResponse(BaseModel):
 class PasswordResetResponse(BaseModel):
     message: str
     reset_token: Optional[str] = None
+
+
+# ── Chat Mode ────────────────────────────────────────────────────────────────
 
 
 class ChatModeResponse(BaseModel):

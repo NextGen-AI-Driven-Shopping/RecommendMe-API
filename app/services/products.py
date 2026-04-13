@@ -1,357 +1,297 @@
-"""Product fetch service backed by SerpAPI Google Shopping.
+"""
+SERP product retrieval service (Step 6 of Flow.md).
 
-Changes from original
-─────────────────────
-* HTTP 429 from SerpAPI immediately sets system_state["serpapi_available"]=False
-  via mark_serpapi_quota_exhausted(). All subsequent calls in this process
-  skip SerpAPI entirely — no blind retry on an exhausted quota.
+Fetches real product listings from SerpAPI for each Product Type.
+Each Product Type name drives one SERP search query.
 
-* Google fallback now uses follow_redirects=True and sends Accept-Language so
-  Google does not redirect/block the request.
-
-* Request-scoped deduplication cache (_FETCH_CACHE) keyed on
-  "{category}:{query}". The same pair is never fetched twice within one
-  process request cycle.  Cache is intentionally NOT cleared between requests
-  because products don't change in seconds — this also acts as a short-term
-  in-process cache.
-
-* Retry loop is capped at MAX_RETRIES (1) so a transient failure triggers at
-  most one retry before giving up.
-
-* Returns None — never a fake card — when all data sources fail.  The caller
-  (query.py) is responsible for deciding what to show the user.
+Rules per Flow.md:
+- Up to 10 product items per Product Type
+- Minimum 5 valid items for card rendering (otherwise description-only)
+- Retry once on SERP failure per Product Type
+- Normalize all prices to INR
+- Never generate fake product names
 """
 
 from __future__ import annotations
 
 import re
-from time import sleep
-from urllib.parse import unquote, urlparse
+from typing import Optional
 
 import httpx
 
 from app.config.settings import get_settings
 from app.core.logger import get_logger
-from app.models.responses import ProductCard
-from app.services.system_state import (
-    MAX_RETRIES,
-    is_serpapi_available,
-    mark_serpapi_quota_exhausted,
-)
+from app.models.internal import ProductItem
+from app.services.cache import build_cache_key, get_cached_result, set_cached_result
+from app.services.system_state import is_serpapi_available, mark_serpapi_quota_exhausted
 
 logger = get_logger(__name__)
 
-# ── Request-scoped deduplication cache ───────────────────────────────────────
-# Key: "{category}:{query}"  Value: list[ProductCard] | None
-# Populated on first fetch; subsequent calls with same key return immediately.
-_FETCH_CACHE: dict[str, list[ProductCard] | None] = {}
+MAX_ITEMS_PER_TYPE = 10
+MIN_ITEMS_FOR_CARDS = 5
+SERP_TIMEOUT = 8.0
 
 
-def _cache_key(category: str, query: str) -> str:
-    return f"{category.strip().lower()}:{query.strip().lower()}"
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-
-async def fetch_products(category: str, query: str) -> list[ProductCard] | None:
+def _normalize_price_to_inr(raw_price: str | None) -> str:
     """
-    Fetch raw (un-ranked) products from SerpAPI Google Shopping.
+    Normalize price to INR format.
+
+    If the price doesn't have INR/₹ indicator, assume it's already in the
+    local SERP currency and return as-is with ₹ prefix.
+    """
+    if not raw_price:
+        return ""
+
+    cleaned = str(raw_price).strip()
+    if not cleaned:
+        return ""
+
+    # Already in INR
+    if "₹" in cleaned or "INR" in cleaned.upper():
+        return cleaned
+
+    # Extract numeric value
+    numeric = re.sub(r"[^\d.,]", "", cleaned)
+    if not numeric:
+        return cleaned
+
+    # Try to parse the value
+    try:
+        # Handle comma-separated numbers (Indian format: 1,45,000)
+        value = float(numeric.replace(",", ""))
+        if value > 0:
+            return f"₹{value:,.0f}"
+    except (ValueError, TypeError):
+        pass
+
+    return cleaned
+
+
+async def fetch_product_items(
+    product_type_name: str,
+    *,
+    context_signals: dict | None = None,
+) -> list[ProductItem]:
+    """
+    Fetch product items from SerpAPI for a single Product Type.
 
     Pipeline
     --------
-    1. Return cached result if this (category, query) was already fetched.
-    2. If SerpAPI quota is exhausted, skip straight to Google fallback.
-    3. Try SerpAPI (up to MAX_RETRIES+1 attempts).
-       - 429 → disable SerpAPI globally, fall through.
-       - 401/403 → fall through to Google fallback.
-    4. Try Google fallback with proper headers and redirect following.
-    5. Return None if everything fails — never a fake card.
+    1. Return cached result if this product type was already fetched.
+    2. If SerpAPI quota is exhausted, return empty list.
+    3. Try SerpAPI (up to 2 attempts with retry).
+       - 429 → disable SerpAPI globally, return empty.
+       - 401/403 → skip to empty return.
+    4. Return empty list if everything fails — never a fake card.
 
     Args:
-        category: Product category string (e.g. "wireless headphones").
-        query:    Original user query used to refine the search term.
+        product_type_name: The functional class name (drives the SERP query).
+        context_signals: Optional signals like region, price range for query tuning.
 
     Returns:
-        List of ProductCard objects, or None if all sources failed.
+        List of ProductItem objects (up to MAX_ITEMS_PER_TYPE).
+        Empty list if SERP fails completely.
     """
-    key = _cache_key(category, query)
+    if not product_type_name or not product_type_name.strip():
+        logger.warning("fetch_product_items called with empty product_type_name")
+        return []
 
-    # ── 1. Cache hit ──────────────────────────────────────────────────────────
-    if key in _FETCH_CACHE:
-        logger.debug("fetch_products cache hit category=%s query=%s", category, query)
-        return _FETCH_CACHE[key]
+    cache_key = build_cache_key(product_type_name)
+    
+    # ── 1. Try cache ──────────────────────────────────────────────────────────
+    cached = await get_cached_result(cache_key)
+    if cached is not None:
+        logger.debug("fetch_product_items cache hit for %s", product_type_name)
+        return cached if isinstance(cached, list) else []
 
-    # ── 2. SerpAPI disabled → go straight to fallback ─────────────────────────
+    # ── 2. Check if SerpAPI is available ──────────────────────────────────────
     if not is_serpapi_available():
         logger.warning(
-            "SerpAPI quota exhausted — skipping to Google fallback category=%s", category
+            "SerpAPI quota exhausted — skipping SERP fetch for product_type=%s",
+            product_type_name,
         )
-        result = await _fetch_products_from_google(category=category, query=query)
-        _FETCH_CACHE[key] = result
-        return result
+        return []
 
     settings = get_settings()
+    api_key = settings.SERPAPI_KEY
 
-    if not settings.SERPAPI_KEY:
-        logger.warning(
-            "SERPAPI_KEY not set — falling back to direct Google fetch query=%s", query
-        )
-        result = await _fetch_products_from_google(category=category, query=query)
-        _FETCH_CACHE[key] = result
-        return result
+    if not api_key:
+        logger.warning("SERPAPI_KEY not configured; skipping SERP fetch for %s", product_type_name)
+        return []
 
-    # ── 3. SerpAPI (with capped retry) ────────────────────────────────────────
-    params = {
-        "engine": "google_shopping",
-        "q": f"{category} {query}".strip(),
-        "api_key": settings.SERPAPI_KEY,
-        "num": 10,
-        "gl": "in",
-        "hl": "en",
-        "google_domain": "google.co.in",
-    }
+    # Build search query from product type name + optional context
+    search_query = product_type_name.strip()
+    if context_signals:
+        if context_signals.get("price_range"):
+            search_query += f" {context_signals['price_range']}"
+        if context_signals.get("region"):
+            search_query += f" in {context_signals['region']}"
 
-    result = await _try_serpapi(params, category=category, query=query)
-    _FETCH_CACHE[key] = result
+    # ── 3. Try SERP search ────────────────────────────────────────────────────
+    items = await _serp_search(api_key, search_query)
+
+    if not items:
+        # Retry once on failure per Flow.md — try with just the product type name
+        logger.info("SERP retry for product_type=%s", product_type_name)
+        items = await _serp_search(api_key, product_type_name)
+
+    # ── 4. Cache and return ───────────────────────────────────────────────────
+    result = items[:MAX_ITEMS_PER_TYPE]
+    await set_cached_result(cache_key, result, ttl=3600)
+
     return result
 
 
-async def _try_serpapi(
-    params: dict, *, category: str, query: str
-) -> list[ProductCard] | None:
-    """Try SerpAPI with MAX_RETRIES, handling 429 quota errors specially."""
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.get("https://serpapi.com/search", params=params)
-
-            # ── Quota exhausted ───────────────────────────────────────────────
-            if response.status_code == 429:
-                logger.error(
-                    "SerpAPI quota exhausted (HTTP 429) — disabling SerpAPI globally. "
-                    "category=%s attempt=%d",
-                    category,
-                    attempt + 1,
-                )
-                mark_serpapi_quota_exhausted()
-                return await _fetch_products_from_google(category=category, query=query)
-
-            # ── Auth failure ──────────────────────────────────────────────────
-            if response.status_code in (401, 403):
-                logger.error(
-                    "SerpAPI authentication failed category=%s — verify SERPAPI_KEY. "
-                    "Response: %s",
-                    category,
-                    response.text[:300],
-                )
-                return await _fetch_products_from_google(category=category, query=query)
-
-            response.raise_for_status()
-
-        except httpx.HTTPStatusError as exc:
-            body = ""
-            try:
-                body = exc.response.text[:300]
-            except Exception:
-                pass
-            logger.error(
-                "SerpAPI HTTP error category=%s status=%s body=%s attempt=%d/%d",
-                category,
-                exc.response.status_code,
-                body,
-                attempt + 1,
-                MAX_RETRIES + 1,
-            )
-            if attempt < MAX_RETRIES:
-                sleep(2**attempt)
-                continue
-            return await _fetch_products_from_google(category=category, query=query)
-
-        except httpx.HTTPError as exc:
-            logger.error(
-                "SerpAPI request failed category=%s error=%s attempt=%d/%d",
-                category,
-                str(exc)[:200],
-                attempt + 1,
-                MAX_RETRIES + 1,
-            )
-            if attempt < MAX_RETRIES:
-                sleep(2**attempt)
-                continue
-            return await _fetch_products_from_google(category=category, query=query)
-
-        # ── Parse response ────────────────────────────────────────────────────
-        data = response.json()
-        items = data.get("shopping_results", [])
-        if not isinstance(items, list):
-            logger.warning(
-                "SerpAPI returned invalid shopping_results format: %s", str(data)[:200]
-            )
-            return await _fetch_products_from_google(category=category, query=query)
-
-        settings = get_settings()
-        products: list[ProductCard] = []
-        for item in items:
-            title = str(item.get("title") or "").strip()
-            link = str(item.get("product_link") or item.get("link") or "").strip()
-            if not title or not link:
-                continue
-
-            rating_raw = item.get("rating")
-            rating_value = float(rating_raw) if isinstance(rating_raw, (int, float)) else None
-
-            reviews_raw = item.get("reviews")
-            reviews_value = int(reviews_raw) if isinstance(reviews_raw, (int, float)) else None
-
-            price_raw = item.get("price")
-            price_str = str(price_raw).strip() if price_raw is not None else None
-
-            products.append(
-                ProductCard(
-                    title=title,
-                    price=price_str or None,
-                    url=inject_affiliate_tag(link, settings.AFFILIATE_TAG),
-                    image_url=item.get("thumbnail") or None,
-                    source=item.get("source") or None,
-                    rating=rating_value,
-                    reviews=reviews_value,
-                    explanation=None,
-                )
-            )
-
-        if products:
-            logger.info(
-                "SerpAPI success category=%s products=%d", category, len(products)
-            )
-            return products
-
-        logger.warning(
-            "SerpAPI returned no product cards — falling back to Google fetch category=%s",
-            category,
-        )
-        return await _fetch_products_from_google(category=category, query=query)
-
-    # Should never reach here
-    return await _fetch_products_from_google(category=category, query=query)
-
-
-# ── Google Fallback ───────────────────────────────────────────────────────────
-
-
-async def _fetch_products_from_google(
-    category: str, query: str
-) -> list[ProductCard] | None:
-    """
-    Direct Google Shopping fallback used when SerpAPI fails or is unavailable.
-
-    Sends proper browser headers and follows redirects so Google's bot
-    protection and HTTP 302 responses are handled correctly.
-    """
-    search_query = f"{category} {query}".strip()
+async def _serp_search(api_key: str, query: str) -> list[ProductItem]:
+    """Execute a SerpAPI Google Shopping search and normalize results."""
     params = {
-        "q": search_query,
-        "tbm": "shop",
+        "engine": "google_shopping",
+        "q": query,
+        "api_key": api_key,
         "hl": "en",
-    }
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
+        "gl": "in",  # India for INR pricing
+        "num": str(MAX_ITEMS_PER_TYPE),
     }
 
     try:
-        async with httpx.AsyncClient(
-            timeout=20.0,
-            headers=headers,
-            follow_redirects=True,   # CRITICAL: handles HTTP 302 from Google
-        ) as client:
-            response = await client.get("https://www.google.com/search", params=params)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.error(
-            "Direct Google fallback failed category=%s error=%s",
-            category,
-            str(exc)[:200],
-        )
-        return None
-
-    html = response.text
-    matches = re.findall(r'href="/url\?q=([^"&]+)[^"]*"', html)
-
-    products: list[ProductCard] = []
-    seen_urls: set[str] = set()
-    for encoded in matches:
-        if len(products) >= 10:
-            break
-        candidate_url = unquote(encoded)
-        if not candidate_url.startswith("http"):
-            continue
-        if "google.com" in urlparse(candidate_url).netloc:
-            continue
-        if candidate_url in seen_urls:
-            continue
-        seen_urls.add(candidate_url)
-
-        domain = urlparse(candidate_url).netloc.replace("www.", "")
-        title = _title_from_url(candidate_url)
-
-        products.append(
-            ProductCard(
-                title=title,
-                price=None,
-                url=candidate_url,
-                image_url=None,
-                source=domain or "Google",
-                rating=None,
-                reviews=None,
-                explanation="Fetched from direct Google fallback because SerpAPI was unavailable.",
+        async with httpx.AsyncClient(timeout=SERP_TIMEOUT) as client:
+            response = await client.get(
+                "https://serpapi.com/search",
+                params=params,
             )
+            
+            # Handle quota exhaustion
+            if response.status_code == 429:
+                logger.error("SerpAPI quota exhausted (429) for query=%s", query[:80])
+                mark_serpapi_quota_exhausted()
+                return []
+            
+            # Handle auth errors
+            if response.status_code in (401, 403):
+                logger.error("SerpAPI auth error (%d) for query=%s", response.status_code, query[:80])
+                return []
+            
+            response.raise_for_status()
+            data = response.json()
+            
+    except httpx.TimeoutException:
+        logger.warning("SERP timeout for query=%s", query[:80])
+        return []
+    except httpx.HTTPStatusError as exc:
+        logger.warning("SERP HTTP error %d for query=%s", exc.response.status_code, query[:80])
+        return []
+    except Exception as exc:
+        logger.warning("SERP request failed for query=%s: %s", query[:80], str(exc)[:120])
+        return []
+
+    shopping_results = data.get("shopping_results", [])
+    if not shopping_results:
+        # Try inline shopping results as fallback
+        shopping_results = data.get("inline_shopping_results", [])
+
+    items: list[ProductItem] = []
+    for result in shopping_results:
+        if len(items) >= MAX_ITEMS_PER_TYPE:
+            break
+
+        title = str(result.get("title", "")).strip()
+        if not title:
+            continue
+
+        # Extract and normalize fields
+        raw_price = result.get("extracted_price") or result.get("price")
+        price_str = _normalize_price_to_inr(str(raw_price) if raw_price else None)
+
+        image_url = str(result.get("thumbnail", "") or result.get("thumbnail_url", "")).strip()
+        buy_link = str(result.get("link", "") or result.get("product_link", "")).strip()
+        source = str(result.get("source", "") or result.get("seller", "")).strip()
+
+        # Rating
+        rating = None
+        raw_rating = result.get("rating")
+        if raw_rating is not None:
+            try:
+                rating = float(raw_rating)
+            except (ValueError, TypeError):
+                pass
+
+        # Reviews count
+        reviews_count = None
+        raw_reviews = result.get("reviews")
+        if raw_reviews is not None:
+            try:
+                reviews_count = int(str(raw_reviews).replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+        # Delivery info
+        delivery_info = None
+        raw_delivery = result.get("delivery")
+        if isinstance(raw_delivery, str) and raw_delivery.strip():
+            delivery_info = raw_delivery.strip()
+
+        # Short description from SERP snippet
+        short_description = str(result.get("snippet", "") or result.get("description", "")).strip()
+
+        # Brand extraction
+        brand = None
+        raw_brand = result.get("brand")
+        if isinstance(raw_brand, str) and raw_brand.strip():
+            brand = raw_brand.strip()
+
+        item = ProductItem(
+            product_name=title,
+            image_url=image_url,
+            price_inr=price_str,
+            short_description=short_description,
+            buy_link=buy_link,
+            rating=rating,
+            brand=brand,
+            reviews_count=reviews_count,
+            delivery_info=delivery_info,
+            source=source or None,
         )
 
-    if products:
-        logger.info(
-            "Google fallback success category=%s products=%d", category, len(products)
-        )
-        return products
+        items.append(item)
 
-    logger.warning(
-        "Google fallback returned no products category=%s", category
+    logger.info(
+        "SERP returned %d items for query=%s (valid=%d)",
+        len(items),
+        query[:60],
+        sum(1 for i in items if i.has_required_fields),
     )
-    return None
+
+    return items
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _title_from_url(url: str) -> str:
-    parsed = urlparse(url)
-    slug = parsed.path.strip("/").split("/")[-1]
-    if not slug:
-        return parsed.netloc.replace("www.", "") or "Product result"
-    slug = slug.replace("-", " ").replace("_", " ")
-    slug = re.sub(r"\s+", " ", slug).strip()
-    if not slug:
-        return parsed.netloc.replace("www.", "") or "Product result"
-    return slug[:80].title()
-
-
-def inject_affiliate_tag(url: str, tag: str) -> str:
+# Legacy function name for backward compatibility during migration
+async def fetch_products(category: str = "", query: str = "") -> list:
     """
-    Append an affiliate tracking tag to a product URL.
+    Legacy wrapper — routes to new fetch_product_items.
 
-    Args:
-        url: The original product page URL.
-        tag: The affiliate tag value to append (pass empty string to skip).
-
-    Returns:
-        URL with the tag query parameter appended, or the original URL if
-        tag is empty.
+    Returns list of ProductCard-compatible dicts for backward compat.
     """
-    if not tag:
-        return url
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}tag={tag}"
+    search_query = f"{category} {query}".strip() if category else query.strip()
+    if not search_query:
+        return []
+
+    items = await fetch_product_items(search_query)
+
+    # Convert to legacy format
+    from app.models.responses import ProductItemResponse
+    return [
+        ProductItemResponse(
+            product_name=item.product_name,
+            image_url=item.image_url,
+            price_inr=item.price_inr,
+            short_description=item.short_description,
+            buy_link=item.buy_link,
+            rating=item.rating,
+            brand=item.brand,
+            reviews_count=item.reviews_count,
+            delivery_info=item.delivery_info,
+            availability=item.availability,
+            source=item.source,
+        )
+        for item in items
+    ]

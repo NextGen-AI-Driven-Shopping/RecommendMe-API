@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from app.models.requests import SessionFeedbackRequest, SessionSaveRequest
 from app.models.responses import ChatMessageState, ChatSessionState, QueryResponse
-from app.utils.session import get_session, session_exists, touch_session
+from app.models.responses import SessionFeedbackResponse, SessionSaveResponse
+from app.utils.session import get_session, session_exists, set_session, touch_session
 
 router = APIRouter(prefix="/sessions")
 
@@ -85,9 +87,83 @@ async def read_session(session_id: str) -> ChatSessionState:
         current_question_index=snapshot.get("current_question_index"),
         clarification_answers=_normalize_clarification_answers(snapshot.get("clarification_answers")),
         latest_response=parsed_latest_response,
+        feedback_count=len(snapshot.get("feedback_events") or []),
+        saved_count=len(snapshot.get("saved_recommendations") or []),
     )
 
 
 @router.get("/{session_id}/exists")
 async def session_exists_route(session_id: str) -> dict[str, bool]:
     return {"exists": session_exists(session_id)}
+
+
+@router.post("/{session_id}/feedback", response_model=SessionFeedbackResponse)
+async def store_session_feedback(session_id: str, payload: SessionFeedbackRequest) -> SessionFeedbackResponse:
+    snapshot = get_session(session_id) or {
+        "session_id": session_id,
+        "status": "new",
+        "title": "New Chat",
+        "messages": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    feedback_events = list(snapshot.get("feedback_events") or [])
+    feedback_events.append(
+        {
+            "sentiment": payload.sentiment,
+            "rating": payload.rating,
+            "comment": payload.comment,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    set_session(
+        session_id,
+        {
+            **snapshot,
+            "feedback_events": feedback_events,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return SessionFeedbackResponse(
+        session_id=session_id,
+        message="Feedback saved.",
+        feedback_count=len(feedback_events),
+    )
+
+
+@router.post("/{session_id}/save", response_model=SessionSaveResponse)
+async def save_session_recommendation(session_id: str, payload: SessionSaveRequest) -> SessionSaveResponse:
+    snapshot = get_session(session_id) or {
+        "session_id": session_id,
+        "status": "new",
+        "title": "New Chat",
+        "messages": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    saved_recommendations = list(snapshot.get("saved_recommendations") or [])
+    saved_recommendations.append(
+        {
+            "note": payload.note,
+            "category": snapshot.get("category"),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "latest_response": snapshot.get("latest_response"),
+        }
+    )
+
+    set_session(
+        session_id,
+        {
+            **snapshot,
+            "saved_recommendations": saved_recommendations,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return SessionSaveResponse(
+        session_id=session_id,
+        message="Recommendation saved.",
+        saved_count=len(saved_recommendations),
+    )
