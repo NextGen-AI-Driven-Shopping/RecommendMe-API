@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.auth import get_optional_user
 from app.models.requests import SessionFeedbackRequest, SessionSaveRequest
 from app.models.responses import ChatMessageState, ChatSessionState, QueryResponse
 from app.models.responses import SessionFeedbackResponse, SessionSaveResponse
@@ -49,9 +50,23 @@ def _normalize_clarification_answers(raw_answers) -> list[dict] | None:
     return normalized
 
 
+def _assert_session_ownership(session: dict | None, current) -> None:
+    """Raise 401/403 if the session belongs to a user and the caller is not that user."""
+    if session is None:
+        return
+    session_user_id = session.get("user_id")
+    if not session_user_id:
+        return  # anonymous session — no ownership to enforce
+    if not current:
+        raise HTTPException(status_code=401, detail="Authentication required to access this session.")
+    if current["user"].user_id != session_user_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+
 @router.get("/{session_id}", response_model=ChatSessionState)
-async def read_session(session_id: str) -> ChatSessionState:
+async def read_session(session_id: str, current=Depends(get_optional_user)) -> ChatSessionState:
     snapshot = get_session(session_id)
+
     if snapshot is None:
         now = datetime.now(timezone.utc).isoformat()
         return ChatSessionState(
@@ -69,7 +84,9 @@ async def read_session(session_id: str) -> ChatSessionState:
             latest_response=None,
         )
 
+    _assert_session_ownership(snapshot, current)
     touch_session(session_id)
+
     messages = [ChatMessageState(**message) for message in snapshot.get("messages", [])]
     latest_response = snapshot.get("latest_response")
     parsed_latest_response = QueryResponse(**latest_response) if latest_response else None
@@ -98,7 +115,11 @@ async def session_exists_route(session_id: str) -> dict[str, bool]:
 
 
 @router.post("/{session_id}/feedback", response_model=SessionFeedbackResponse)
-async def store_session_feedback(session_id: str, payload: SessionFeedbackRequest) -> SessionFeedbackResponse:
+async def store_session_feedback(
+    session_id: str,
+    payload: SessionFeedbackRequest,
+    current=Depends(get_optional_user),
+) -> SessionFeedbackResponse:
     snapshot = get_session(session_id) or {
         "session_id": session_id,
         "status": "new",
@@ -106,6 +127,8 @@ async def store_session_feedback(session_id: str, payload: SessionFeedbackReques
         "messages": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    _assert_session_ownership(snapshot, current)
 
     feedback_events = list(snapshot.get("feedback_events") or [])
     feedback_events.append(
@@ -134,7 +157,11 @@ async def store_session_feedback(session_id: str, payload: SessionFeedbackReques
 
 
 @router.post("/{session_id}/save", response_model=SessionSaveResponse)
-async def save_session_recommendation(session_id: str, payload: SessionSaveRequest) -> SessionSaveResponse:
+async def save_session_recommendation(
+    session_id: str,
+    payload: SessionSaveRequest,
+    current=Depends(get_optional_user),
+) -> SessionSaveResponse:
     snapshot = get_session(session_id) or {
         "session_id": session_id,
         "status": "new",
@@ -142,6 +169,8 @@ async def save_session_recommendation(session_id: str, payload: SessionSaveReque
         "messages": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    _assert_session_ownership(snapshot, current)
 
     saved_recommendations = list(snapshot.get("saved_recommendations") or [])
     saved_recommendations.append(

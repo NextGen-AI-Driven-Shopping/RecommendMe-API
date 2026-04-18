@@ -90,7 +90,10 @@ async def upload_avatar(image: UploadFile = File(...), current=Depends(get_curre
         upload_root = backend_root / upload_root
     upload_root.mkdir(parents=True, exist_ok=True)
 
-    file_ext = Path(image.filename or "avatar.png").suffix.lower() or ".png"
+    _allowed_ext = {".jpg", ".jpeg", ".png", ".webp"}
+    file_ext = Path(image.filename or "avatar.png").suffix.lower()
+    if file_ext not in _allowed_ext:
+        file_ext = ".png"
     file_name = f"{current['user'].user_id}-{uuid.uuid4().hex}{file_ext}"
     file_path = upload_root / file_name
     file_path.write_bytes(contents)
