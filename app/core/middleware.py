@@ -4,7 +4,8 @@ Request middleware.
 Provides:
   - Correlation ID injection (X-Correlation-ID header echoed on responses).
   - Per-request timing.
-  - Structured request/response logging.
+  - Structured request/response logging with sensitive data scrubbed.
+  - Security headers registered via app.middleware in main.py.
 
 Register all middleware by calling register_middleware(app).
 """
@@ -19,6 +20,25 @@ from starlette.responses import Response
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Query-param keys whose values must never appear in logs.
+_SENSITIVE_PARAMS = {"token", "reset_token", "password", "api_key", "secret", "key"}
+
+
+def _scrub_url(url: str) -> str:
+    """Remove sensitive query-param values from a URL string before logging."""
+    try:
+        from urllib.parse import urlparse, urlencode, parse_qsl
+        parsed = urlparse(url)
+        params = parse_qsl(parsed.query, keep_blank_values=True)
+        scrubbed = [
+            (k, "***" if k.lower() in _SENSITIVE_PARAMS else v)
+            for k, v in params
+        ]
+        safe_query = urlencode(scrubbed)
+        return parsed._replace(query=safe_query).geturl()
+    except Exception:
+        return url
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -35,12 +55,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         except Exception:
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
-
             logger.error(
                 "request_failed",
                 extra={
                     "method": request.method,
-                    "path": str(request.url),
+                    "path": _scrub_url(str(request.url)),
                     "duration_ms": duration_ms,
                     "correlation_id": correlation_id,
                 },
@@ -52,7 +71,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         log_data = {
             "method": request.method,
-            "path": str(request.url),
+            "path": _scrub_url(str(request.url)),
             "status": response.status_code,
             "duration_ms": duration_ms,
             "correlation_id": correlation_id,
