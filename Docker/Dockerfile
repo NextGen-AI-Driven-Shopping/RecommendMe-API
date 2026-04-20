@@ -29,17 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies before copying application source so Docker can
 # cache this layer and avoid reinstalling on every code change.
-COPY Requirements/requirements.txt /app/Requirements/requirements.txt
-RUN pip install --no-cache-dir -r /app/Requirements/requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy app source and selected runtime assets.
 COPY app /app/app
 COPY start.sh /app/start.sh
 COPY railway.toml /app/railway.toml
 COPY Environment /app/Environment
-
-# Ensure startup script can be executed by the container runtime.
-RUN chmod +x /app/start.sh
 
 # Ensure startup script can be executed by the container runtime.
 RUN chmod +x /app/start.sh

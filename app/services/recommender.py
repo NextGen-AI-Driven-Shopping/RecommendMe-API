@@ -1,83 +1,117 @@
-"""AI orchestration service for category and product reasoning."""
+"""
+Recommendation plan generation service (Step 5 of Flow.md).
+
+Generates the recommendation plan from AI: exactly 1 category + up to 10
+Product Types with context-aware descriptions.
+
+NO product names are generated here — those come from SERP in Step 6.
+"""
 
 from __future__ import annotations
 
-import re
+import json
+from typing import Any
 
 from app.core.logger import get_logger
-from app.providers import (
-    BaseCategoryProvider,
-    CategoryReasoningResult,
-    GeminiProvider,
-    GroqProvider,
-    OllamaProvider,
-    OpenAIProvider,
-    ProviderError,
-)
+from app.models.internal import ProductType, RecommendationResult
+from app.prompts.category_reasoning import build_recommendation_messages
+from app.services.vagueness import _try_provider_chain
+from app.utils.prompt_utils import extract_json_payload
 
 logger = get_logger(__name__)
 
 
 class RecommendationServiceError(Exception):
-    """Raised when every provider in the fallback chain fails."""
+    """Raised when the recommendation plan cannot be generated."""
 
 
-def _redact_sensitive(text: str) -> str:
-    """Redact key-like query parameters and token fragments from log strings."""
-    redacted = re.sub(r"((?:api_)?key=)[^&\s]+", r"\1[REDACTED]", text, flags=re.IGNORECASE)
-    redacted = re.sub(r"\bsk-[A-Za-z0-9_-]+\b", "sk-[REDACTED]", redacted)
-    return redacted
-
-
-def _normalize_context(context: list | None) -> list[dict[str, str]]:
-    """Normalize context payload into chat messages for providers."""
-    if not context:
-        return []
-
-    normalized: list[dict[str, str]] = []
-    for item in context:
-        if isinstance(item, dict):
-            role = item.get("role") or "user"
-            content = item.get("content") or ""
-        else:
-            role = getattr(item, "role", "user") or "user"
-            content = getattr(item, "content", "") or ""
-        if not isinstance(content, str) or not content.strip():
-            continue
-        normalized.append({"role": str(role), "content": content.strip()})
-    return normalized
-
-
-async def generate_category_plan(
+async def generate_recommendation_plan(
     query: str,
-    context: list | None = None,
-) -> CategoryReasoningResult:
-    """Generate category reasoning using provider fallback order."""
-    providers: list[BaseCategoryProvider] = [
-        GroqProvider(),
-        OllamaProvider(),
-        OpenAIProvider(),
-        GeminiProvider(),
-    ]
-    provider_context = _normalize_context(context)
+    *,
+    conversation_context: list[dict[str, str]] | None = None,
+    user_profile: dict[str, Any] | None = None,
+) -> RecommendationResult:
+    """
+    Generate a recommendation plan from the AI.
 
-    errors: list[str] = []
-    for provider in providers:
-        try:
-            result = await provider.generate(query=query, context=provider_context)
-            logger.info(
-                "Category plan generated provider=%s categories=%d products=%d",
-                provider.provider_name,
-                len(result.categories),
-                len(result.recommended_products),
-            )
-            return result
-        except ProviderError as exc:
-            error_text = _redact_sensitive(str(exc))
-            logger.warning("Provider failed provider=%s error=%s", provider.provider_name, error_text)
-            errors.append(f"{provider.provider_name}: {error_text}")
+    This corresponds to Flow.md Step 5:
+    - Input: full unabridged conversation (query + all 5 Q&As + user profile)
+    - Output: exactly 1 display-label Category + up to 10 Product Types
+
+    Args:
+        query: The consolidated query with all clarification context.
+        conversation_context: Full conversation history.
+        user_profile: User profile for personalization.
+
+    Returns:
+        RecommendationResult with category and product types (no items yet).
+
+    Raises:
+        RecommendationServiceError: If all providers fail.
+    """
+    messages = build_recommendation_messages(
+        query=query,
+        conversation_context=conversation_context,
+        user_profile=user_profile,
+    )
+
+    raw = await _try_provider_chain(messages, step_name="recommendation_plan")
+    if not raw:
+        raise RecommendationServiceError(
+            "All AI services failed to generate recommendations. Please try again."
+        )
+
+    try:
+        payload = extract_json_payload(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.error(
+            "Recommendation plan JSON parse failed: %s | raw=%s", exc, raw[:400]
+        )
+        raise RecommendationServiceError(
+            "Failed to parse recommendation plan from AI."
+        ) from exc
+
+    # Extract category (exactly 1)
+    category = str(payload.get("category", "Recommendations")).strip()
+    if not category:
+        category = "Recommendations"
+
+    # Extract product types (up to 10)
+    raw_types = payload.get("product_types", [])
+    if not isinstance(raw_types, list):
+        raw_types = []
+
+    product_types: list[ProductType] = []
+    for item in raw_types[:10]:
+        if not isinstance(item, dict):
             continue
 
-    joined_errors = " | ".join(errors)
-    logger.error("All providers failed for category reasoning. errors=%s", joined_errors)
-    raise RecommendationServiceError("All category reasoning providers failed.")
+        pt_name = str(item.get("product_type", "")).strip()
+        pt_desc = str(item.get("description", "")).strip()
+
+        if not pt_name:
+            continue
+
+        product_types.append(
+            ProductType(
+                product_type=pt_name,
+                description=pt_desc,
+            )
+        )
+
+    if not product_types:
+        logger.error("AI returned no valid product types | raw=%s", raw[:400])
+        raise RecommendationServiceError(
+            "AI failed to generate product type recommendations."
+        )
+
+    logger.info(
+        "Recommendation plan generated: category=%s product_types=%d",
+        category,
+        len(product_types),
+    )
+
+    return RecommendationResult(
+        category=category,
+        product_types=product_types,
+    )

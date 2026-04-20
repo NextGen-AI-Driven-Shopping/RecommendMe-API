@@ -5,5 +5,5 @@ dockerfilePath = "Docker/Dockerfile"
 [deploy]
 # Use repository startup script to avoid shell-quoting issues with $PORT expansion.
 startCommand = "./start.sh"
-healthcheckPath = "/health"
+healthcheckPath = "/v1/health"
 healthcheckTimeout = 120

@@ -31,12 +31,13 @@ class GroqProvider(BaseCategoryProvider):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         if not settings.GROQ_API_KEY:
             raise ProviderUnavailableError("GROQ_API_KEY is not configured")
 
-        messages = build_category_reasoning_messages(query=query, context=context)
+        messages = build_category_reasoning_messages(query=query, context=context, domain_hint=domain_hint)
 
         headers = {
             "Authorization": f"Bearer {settings.GROQ_API_KEY}",
@@ -44,15 +45,19 @@ class GroqProvider(BaseCategoryProvider):
         }
 
         candidate_models = [
+            *(settings.GROQ_MODELS or []),
             settings.GROQ_MODEL,
-            "gpt-oss-120B",
-            "kimi-3.5-pro",
-
+            "gpt-oss-120b",
+            "kimi-k2-instruct",
+            "qwen/qwen3-32b",
+            "llama-3.3-70b-versatile",
         ]
         deduped_models: list[str] = []
         for model in candidate_models:
             if model and model not in deduped_models:
                 deduped_models.append(model)
+
+        deduped_models = deduped_models[:4]
 
         last_error: str | None = None
         for model_name in deduped_models:

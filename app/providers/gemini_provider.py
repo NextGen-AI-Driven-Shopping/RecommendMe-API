@@ -29,12 +29,13 @@ class GeminiProvider(BaseCategoryProvider):
         query: str,
         context: list[dict[str, str]] | None = None,
         timeout_seconds: float = 8.0,
+        domain_hint: str | None = None,
     ) -> CategoryReasoningResult:
         settings = get_settings()
         if not settings.GEMINI_API_KEY:
             raise ProviderUnavailableError("GEMINI_API_KEY is not configured")
 
-        messages = build_category_reasoning_messages(query=query, context=context)
+        messages = build_category_reasoning_messages(query=query, context=context, domain_hint=domain_hint)
         prompt_text = "\n".join(message["content"] for message in messages)
 
         body = {
@@ -43,9 +44,20 @@ class GeminiProvider(BaseCategoryProvider):
         }
         params = {"key": settings.GEMINI_API_KEY}
 
-        # Try the configured model via stable v1, then fall back to known working models.
+        # Try configured models first, then quality defaults.
         candidate_models: list[tuple[str, str]] = []
-        for m in [settings.GEMINI_MODEL, "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"]:
+        preferred = [
+            *(settings.GEMINI_MODELS or []),
+            settings.GEMINI_MODEL,
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ]
+        deduped: list[str] = []
+        for model in preferred:
+            if model and model not in deduped:
+                deduped.append(model)
+        for m in deduped[:4]:
             for api_ver in ["v1", "v1beta"]:
                 entry = (m, api_ver)
                 if entry not in candidate_models:

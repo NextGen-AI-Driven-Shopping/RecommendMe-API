@@ -6,7 +6,7 @@ import httpx
 import redis.asyncio as redis
 from fastapi import APIRouter
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
 from app.core.logger import get_logger
 from app.models.responses import HealthResponse
 
@@ -36,6 +36,7 @@ async def health_check() -> HealthResponse:
         except Exception as exc:
             logger.warning("Ollama probe failed: %s", exc)
             ollama_status = "unreachable"
+
     redis_status = "not configured"
     if settings.REDIS_URL:
         try:
