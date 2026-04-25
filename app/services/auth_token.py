@@ -1,8 +1,9 @@
 """Signed auth token helpers.
 
-The app does not depend on an external identity provider, so we issue
-compact HMAC-signed bearer tokens that can be validated by the API
-without storing a server-side session for every request.
+The app issues compact HMAC-signed bearer tokens that can be validated
+without a server-side session per request. A small in-memory denylist
+records hashes of tokens that have been logged out or otherwise revoked
+so they cannot be reused before their natural expiry.
 """
 
 from __future__ import annotations
@@ -11,10 +12,14 @@ import base64
 import hashlib
 import hmac
 import json
+import threading
 import time
 from typing import Any
 
 from app.config.settings import get_settings
+
+_DENYLIST_LOCK = threading.RLock()
+_token_denylist: dict[str, int] = {}  # sha256(token) -> exp timestamp
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -24,6 +29,16 @@ def _b64url_encode(raw: bytes) -> str:
 def _b64url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _prune_denylist(now: int) -> None:
+    expired = [key for key, exp in _token_denylist.items() if exp <= now]
+    for key in expired:
+        _token_denylist.pop(key, None)
 
 
 def create_auth_token(*, user_id: str, session_id: str | None = None) -> str:
@@ -64,3 +79,24 @@ def verify_auth_token(token: str) -> dict[str, Any] | None:
         return payload
     except Exception:
         return None
+
+
+def revoke_token(token: str) -> None:
+    """Add the token's fingerprint to the denylist until its natural expiry."""
+    payload = verify_auth_token(token)
+    if not payload:
+        return
+    exp = int(payload.get("exp", 0))
+    if exp <= int(time.time()):
+        return
+    with _DENYLIST_LOCK:
+        _prune_denylist(int(time.time()))
+        _token_denylist[_token_fingerprint(token)] = exp
+
+
+def is_token_revoked(token: str) -> bool:
+    if not token:
+        return False
+    with _DENYLIST_LOCK:
+        _prune_denylist(int(time.time()))
+        return _token_fingerprint(token) in _token_denylist

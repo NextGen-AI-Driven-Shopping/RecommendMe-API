@@ -88,3 +88,27 @@ def delete_session(session_id: str) -> None:
 def session_exists(session_id: str) -> bool:
     """Return True if the session exists and has not expired."""
     return get_session(session_id) is not None
+
+
+def list_sessions_for_user(user_id: str) -> list[dict]:
+    """Return non-expired sessions whose owner matches the supplied user_id."""
+    if not user_id:
+        return []
+    now = time.time()
+    results: list[dict] = []
+    with _STORE_LOCK:
+        stale: list[str] = []
+        for sid, entry in _store.items():
+            if now - entry["last_accessed"] > SESSION_TTL_SECONDS:
+                stale.append(sid)
+                continue
+            data = entry["data"]
+            if data.get("user_id") == user_id:
+                snapshot = copy.deepcopy(data)
+                snapshot.setdefault("session_id", sid)
+                results.append(snapshot)
+        for sid in stale:
+            _store.pop(sid, None)
+
+    results.sort(key=lambda s: s.get("updated_at") or s.get("created_at") or "", reverse=True)
+    return results
