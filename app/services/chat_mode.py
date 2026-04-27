@@ -2,120 +2,256 @@
 Post-recommendation chat mode service (Step 8 of Flow.md).
 
 Handles follow-up questions after recommendations are displayed.
-Passes full context per Flow.md:
-  - Initial user query
-  - All 5 follow-up questions and responses
-  - Generated category and all Product Type descriptions
-  - All product items data from SERP
-  - User profile data
+The AI answers the question AND declares which specific products it picked,
+so the route can filter session products down to only those items.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+import os
+import re
 
+import httpx
+
+from app.config.settings import get_settings
 from app.core.logger import get_logger
 from app.services.vagueness import _try_provider_chain
 
 logger = get_logger(__name__)
 
+# ── System prompt ─────────────────────────────────────────────────────────────
 
 CHAT_SYSTEM_PROMPT = """\
-You are a helpful product recommendation assistant in follow-up chat mode.
+You are a product recommendation assistant answering follow-up questions.
 
-The user has already received product recommendations. They are now asking \
-follow-up questions about those recommendations.
+The user has ALREADY received recommendations. The full list is in \
+<RECOMMENDED_PRODUCTS> below.
 
-You have access to the full conversation context including:
-- The user's original query
-- All clarification Q&A pairs
-- The category and product types that were recommended
-- All product items with their prices, ratings, and descriptions
+ABSOLUTE RULES:
+1. ONLY reference products explicitly listed in <RECOMMENDED_PRODUCTS>.
+2. Do NOT fabricate prices, ratings, or specs.
+3. For "top N", "best N", "pick N" requests — pick EXACTLY N products
+   from the ENTIRE list across ALL categories combined, ranked by
+   overall value (rating + price + specs). Do NOT pick N per category.
+4. <selected> must contain EXACTLY those N names, pipe-separated.
+5. For general questions — leave <selected> empty.
 
-────────────────────────────────────────────
-RULES
-────────────────────────────────────────────
-1. Answer ONLY based on the provided product data — never hallucinate products, \
-   prices, or features.
-2. When comparing products, reference their actual prices, ratings, and features.
-3. If the user asks about a product not in the recommendations, say so honestly.
-4. Keep responses concise and helpful.
-5. If asked to recommend something new/different, suggest they start a new search.
-6. Use a natural conversational tone.
-7. Reference specific product names and details from the data when relevant.
+RESPONSE FORMAT:
+<answer>
+[One short sentence max. For ranking queries just say "Here are the top N picks."]
+</answer>
+<selected>
+[Pipe-separated EXACT product names, best first. Empty for general answers.]
+</selected>
 """
 
 
-def _build_context_message(
+# ── Slim context builder ──────────────────────────────────────────────────────
+# IMPORTANT: We intentionally send ONLY name + price + rating to the AI.
+# Sending full descriptions + links caused 413 Payload Too Large on Groq
+# when there were 100 products (10 types × 10 items).
+# The AI only needs names to pick from — the frontend already has full data.
+
+def _build_slim_product_block(product_types_data: list[dict]) -> str:
+    """
+    Render products as a compact reference list.
+    Format: #N. Product Name | Price | Rating
+    No descriptions, no links, no delivery info — keeps context tiny.
+    """
+    if not product_types_data:
+        return "(No product data available)"
+
+    lines: list[str] = []
+    global_index = 1
+
+    for pt in product_types_data:
+        pt_name = pt.get("product_type") or pt.get("category") or "Products"
+        lines.append(f"\n[{pt_name}]")
+
+        items = pt.get("product_items") or pt.get("products") or []
+        if not items:
+            lines.append("  (no items)")
+            continue
+
+        for item in items:
+            name   = item.get("product_name") or item.get("title") or "Unknown"
+            price  = item.get("price_inr")    or item.get("price") or "N/A"
+            rating = item.get("rating")
+            rating_str = f" | ★{rating}/5" if rating is not None else ""
+            lines.append(f"  #{global_index}. {name} | {price}{rating_str}")
+            global_index += 1
+
+    return "\n".join(lines)
+
+
+def _build_context_prefix(
     *,
-    original_query: str | None = None,
-    clarification_answers: list[dict[str, str]] | None = None,
-    category: str | None = None,
-    product_types_data: list[dict] | None = None,
-    user_profile: dict | None = None,
+    original_query: str | None,
+    category: str | None,
+    product_types_data: list[dict],
 ) -> str:
-    """Build a comprehensive context string from all session data."""
     parts: list[str] = []
 
     if original_query:
-        parts.append(f"Original query: \"{original_query}\"")
-
-    if clarification_answers:
-        parts.append("\nClarification Q&A:")
-        for qa in clarification_answers:
-            parts.append(f"  Q: {qa.get('question', '')}")
-            parts.append(f"  A: {qa.get('answer', '')}")
-
+        parts.append(f'Original request: "{original_query}"')
     if category:
-        parts.append(f"\nRecommendation category: {category}")
+        parts.append(f"Category: {category}")
 
-    if product_types_data:
-        parts.append("\nRecommended product types:")
-        for pt_data in product_types_data:
-            pt_name = pt_data.get("product_type", "Unknown")
-            pt_desc = pt_data.get("description", "")
-            parts.append(f"\n--- {pt_name} ---")
-            if pt_desc:
-                parts.append(f"Description: {pt_desc}")
-
-            items = pt_data.get("product_items", pt_data.get("products", []))
-            if items:
-                parts.append("Products:")
-                for i, item in enumerate(items[:10], 1):
-                    # Handle both old and new format
-                    name = item.get("product_name") or item.get("title", "Unknown")
-                    price = item.get("price_inr") or item.get("price", "N/A")
-                    rating = item.get("rating", "N/A")
-                    source = item.get("source", "")
-                    buy_link = item.get("buy_link") or item.get("url", "")
-                    desc = item.get("short_description") or item.get("explanation", "")
-
-                    parts.append(f"  {i}. {name} — {price}")
-                    if rating and rating != "N/A":
-                        parts.append(f"     Rating: {rating}/5")
-                    if source:
-                        parts.append(f"     Source: {source}")
-                    if desc:
-                        parts.append(f"     {desc}")
-                    if buy_link:
-                        parts.append(f"     Link: {buy_link}")
-
-    if user_profile:
-        profile_parts = []
-        if user_profile.get("gender"):
-            profile_parts.append(f"Gender: {user_profile['gender']}")
-        if user_profile.get("age"):
-            profile_parts.append(f"Age: {user_profile['age']}")
-        if user_profile.get("interests"):
-            interests = user_profile["interests"]
-            if isinstance(interests, list):
-                interests = ", ".join(interests)
-            profile_parts.append(f"Interests: {interests}")
-        if profile_parts:
-            parts.append(f"\nUser profile: {'; '.join(profile_parts)}")
+    product_block = _build_slim_product_block(product_types_data)
+    parts.append(f"\n<RECOMMENDED_PRODUCTS>\n{product_block}\n</RECOMMENDED_PRODUCTS>")
 
     return "\n".join(parts)
+
+
+# ── Response parser ───────────────────────────────────────────────────────────
+
+def _parse_structured_response(raw: str) -> tuple[str, list[str]]:
+    """
+    Parse <answer>...</answer><selected>...</selected> from AI response.
+
+    Returns:
+        (answer_text, selected_product_names)
+        selected_product_names is [] if AI picked no specific products.
+    """
+    answer_match  = re.search(r"<answer>(.*?)</answer>",   raw, re.DOTALL | re.IGNORECASE)
+    selected_match = re.search(r"<selected>(.*?)</selected>", raw, re.DOTALL | re.IGNORECASE)
+
+    if answer_match:
+        answer_text = answer_match.group(1).strip()
+    else:
+        # Fallback: strip <selected> block and use rest as answer
+        answer_text = re.sub(
+            r"<selected>.*?</selected>", "", raw, flags=re.DOTALL | re.IGNORECASE
+        ).strip()
+
+    selected_names: list[str] = []
+    if selected_match:
+        raw_selected = selected_match.group(1).strip()
+        if raw_selected:
+            selected_names = [n.strip() for n in raw_selected.split("|") if n.strip()]
+
+    return answer_text, selected_names
+
+
+# ── Product filter ────────────────────────────────────────────────────────────
+
+def filter_product_types_by_names(
+    product_types_data: list[dict],
+    selected_names: list[str],
+) -> list[dict]:
+    """
+    Return only product items whose name fuzzy-matches one of selected_names.
+
+    Matching: case-insensitive substring both ways + 60% token overlap fallback.
+    If selected_names is empty → return full list (no filter).
+    If nothing matches → log warning and return full list as safety net.
+    """
+    if not selected_names:
+        return product_types_data
+
+    def _matches(product_name: str) -> bool:
+        pn = product_name.lower()
+        for sel in selected_names:
+            sl = sel.lower()
+            if sl in pn or pn in sl:
+                return True
+            # Token overlap: ≥60% of selected tokens appear in product name
+            sel_tokens = set(sl.split())
+            pn_tokens  = set(pn.split())
+            if sel_tokens and len(sel_tokens & pn_tokens) / len(sel_tokens) >= 0.6:
+                return True
+        return False
+
+    filtered: list[dict] = []
+    for pt in product_types_data:
+        items = pt.get("product_items") or pt.get("products") or []
+        matched = [
+            item for item in items
+            if _matches(item.get("product_name") or item.get("title") or "")
+        ]
+        if matched:
+            filtered.append({**pt, "product_items": matched})
+
+    if not filtered:
+        logger.warning(
+            "[chat_mode] No products matched selected_names=%s — returning all", selected_names
+        )
+        return product_types_data
+
+    return filtered
+
+
+# ── Groq caller ───────────────────────────────────────────────────────────────
+
+_GROQ_TIMEOUT = 20.0
+_GROQ_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "mixtral-8x7b-32768",
+]
+
+
+async def _call_groq_direct(messages: list[dict]) -> str | None:
+    settings = get_settings()
+    api_key = getattr(settings, "GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+    if not api_key:
+        logger.warning("[chat_mode] GROQ_API_KEY not configured")
+        return None
+
+    configured: list[str] = list(getattr(settings, "GROQ_MODELS", []) or [])
+    candidate_models: list[str] = []
+    for m in [*configured, *_GROQ_FALLBACK_MODELS]:
+        if m and m not in candidate_models:
+            candidate_models.append(m)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    for model in candidate_models[:4]:
+        try:
+            async with httpx.AsyncClient(timeout=_GROQ_TIMEOUT) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json={"model": model, "temperature": 0.3, "messages": messages},
+                )
+
+            if resp.status_code == 413:
+                logger.warning("[chat_mode] Groq/%s → 413 (still too large)", model)
+                continue
+            if resp.status_code == 429:
+                logger.warning("[chat_mode] Groq/%s → 429 rate limited", model)
+                continue
+            if resp.status_code == 400:
+                logger.warning("[chat_mode] Groq/%s → 400: %s", model, resp.text[:200])
+                continue
+
+            resp.raise_for_status()
+            text = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+            if text:
+                logger.info("[chat_mode] Groq/%s succeeded", model)
+                return text
+
+        except Exception as exc:
+            logger.warning("[chat_mode] Groq/%s error: %s", model, str(exc)[:120])
+
+    return None
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
+
+_FALLBACK_ERROR = (
+    "I'm having trouble answering right now. Please try again in a moment.",
+    None,   # None = error state — route will NOT return product cards
+)
 
 
 async def answer_chat_followup(
@@ -124,55 +260,67 @@ async def answer_chat_followup(
     session_data: dict | None = None,
     categories_payload: list[dict] | None = None,
     profile_context: dict | None = None,
-) -> str:
+) -> tuple[str, list[str] | None]:
     """
-    Generate an answer to a follow-up question in chat mode.
-
-    Per Flow.md Step 8, passes full context:
-    - Original query + all Q&As
-    - Category + all Product Type descriptions
-    - All product items from SERP
-    - User profile
-
-    Args:
-        question: The user's follow-up question.
-        session_data: Full session data dict (contains all context).
-        categories_payload: Legacy categories payload for backward compat.
-        profile_context: User profile data.
+    Generate an answer to a follow-up question.
 
     Returns:
-        AI-generated answer string.
+        (answer_text, selected_product_names)
+
+        selected_product_names:
+          - list[str]  → names AI picked; filter products to these
+          - []         → AI gave a general answer; show all products
+          - None       → provider error; show NO product cards
     """
-    # Build context from session data (new format)
+    # ── Build slim product context ────────────────────────────────────────────
     if session_data:
-        context = _build_context_message(
+        product_types_data = (
+            session_data.get("product_types")
+            or (session_data.get("latest_response") or {}).get("product_types")
+            or session_data.get("categories")
+            or []
+        )
+        context_prefix = _build_context_prefix(
             original_query=session_data.get("original_query"),
-            clarification_answers=session_data.get("clarification_answers"),
             category=session_data.get("category"),
-            product_types_data=session_data.get("product_types", []),
-            user_profile=profile_context,
+            product_types_data=product_types_data,
         )
     elif categories_payload:
-        # Legacy backward compat: categories_payload is a list of category dicts
-        context = _build_context_message(
+        context_prefix = _build_context_prefix(
+            original_query=None,
+            category=None,
             product_types_data=categories_payload,
-            user_profile=profile_context,
         )
     else:
-        context = "No product data available."
+        context_prefix = "<RECOMMENDED_PRODUCTS>(No product data)</RECOMMENDED_PRODUCTS>"
 
     messages = [
         {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-        {"role": "user", "content": f"PRODUCT CONTEXT:\n{context}\n\nUSER QUESTION: {question}"},
+        {
+            "role": "user",
+            "content": (
+                f"{context_prefix}\n\n"
+                f"User question: {question}\n\n"
+                f"Respond using <answer></answer> and <selected></selected> tags."
+            ),
+        },
     ]
 
-    raw = await _try_provider_chain(messages, step_name="chat_mode")
+    raw = await _call_groq_direct(messages)
 
     if not raw:
-        logger.warning("Chat mode: all providers failed for question=%s", question[:80])
-        return (
-            "I'm having trouble processing your question right now. "
-            "Please try again in a moment, or start a new search for different products."
-        )
+        logger.warning("[chat_mode] Direct Groq failed, trying _try_provider_chain")
+        raw = await _try_provider_chain(messages, step_name="chat_mode")
 
-    return raw.strip()
+    if not raw:
+        logger.warning("[chat_mode] All providers failed for question=%s", question[:80])
+        return _FALLBACK_ERROR  # None signals "don't show products"
+
+    answer_text, selected_names = _parse_structured_response(raw.strip())
+
+    logger.info(
+        "[chat_mode] answer_len=%d selected_count=%d selected=%s",
+        len(answer_text), len(selected_names), selected_names,
+    )
+
+    return answer_text, selected_names

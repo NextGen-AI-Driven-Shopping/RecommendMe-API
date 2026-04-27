@@ -267,7 +267,13 @@ class PasswordResetResponse(BaseModel):
 
 
 class ChatModeResponse(BaseModel):
-    """Response body for POST /v1/chat/mode."""
+    """Response body for POST /v1/chat/mode.
+
+    Includes the AI answer text plus the full session product_types so the
+    frontend can render product cards alongside the text response.
+    """
 
     session_id: str
     message: str
+    product_types: Optional[List[ProductTypeResponse]] = None
+    category: Optional[str] = None
