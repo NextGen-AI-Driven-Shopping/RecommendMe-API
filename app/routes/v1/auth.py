@@ -1,11 +1,18 @@
-"""Authentication route handlers for CSV-backed MVP auth.
+"""Authentication route handlers.
 
 Hardening applied at this layer:
-  * Per-IP sliding-window rate limit on every public auth endpoint.
-  * Per-identifier exponential lockout on repeated failed logins.
-  * Bearer-token revocation via /logout (server-side denylist).
-  * Generic 401 message on invalid credentials so the API does not
-    distinguish "user not found" from "wrong password" externally.
+  * Per-IP sliding-window rate limit on every public auth endpoint
+    (Redis-backed when Redis is available, in-memory fallback for dev).
+  * Per-identifier exponential lockout on repeated failed logins
+    (Redis-backed when Redis is available).
+  * Generic 401 on invalid credentials — does not reveal user existence.
+  * Logout revokes the bearer token via the Redis-backed denylist.
+
+NOTE: Login / signup still issue custom bearer tokens during the
+transition to Supabase Auth. Once Supabase is fully integrated the
+frontend will obtain tokens directly from Supabase and these routes
+will be re-evaluated. The backend already verifies Supabase JWTs —
+see app/core/auth.py and app/services/supabase_jwt.py.
 """
 
 from __future__ import annotations
@@ -17,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.config.settings import get_settings
 from app.core.auth import get_current_user
-from app.core.rate_limit import LoginAttemptTracker, RateLimiter, get_client_key
+from app.core.rate_limit import get_client_key, get_login_tracker, get_rate_limiter
 from app.models.requests import ForgotPasswordRequest, LoginRequest, ResetPasswordRequest, SignupRequest
 from app.models.responses import AuthLoginResponse, AuthSignupResponse, PasswordResetResponse
 from app.services.auth_csv import (
@@ -36,11 +43,11 @@ auth_service = CsvAuthService()
 profile_store = JsonProfileStore()
 
 _settings = get_settings()
-_auth_rate_limiter = RateLimiter(
+_auth_rate_limiter = get_rate_limiter(
     max_requests=max(5, _settings.RATE_LIMIT_PER_MINUTE),
     window_seconds=60,
 )
-_login_attempts = LoginAttemptTracker(
+_login_attempts = get_login_tracker(
     max_failures=5,
     window_seconds=600,
     base_lockout_seconds=60,
@@ -117,7 +124,6 @@ async def login(payload: LoginRequest, request: Request) -> AuthLoginResponse:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (AuthNotFoundError, AuthCredentialsError) as exc:
             _login_attempts.record_failure(identifier)
-            # Generic message — do not reveal whether the user exists.
             raise HTTPException(status_code=401, detail="Invalid email/phone or password.") from exc
 
         _login_attempts.record_success(identifier)
@@ -174,7 +180,6 @@ async def reset_password(payload: ResetPasswordRequest, request: Request) -> Pas
 
     profile = profile_store.find_by_reset_token(payload.reset_token)
     if not profile:
-        # Generic 400 — do not reveal whether the token has ever existed.
         raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
 
     auth_service.update_password(user_id=profile.user_id, new_password=payload.new_password)
@@ -185,7 +190,14 @@ async def reset_password(payload: ResetPasswordRequest, request: Request) -> Pas
 
 @router.post("/logout")
 async def logout(current=Depends(get_current_user)) -> Response:
-    """Revoke the bearer token used for this request."""
+    """Revoke the bearer token used for this request.
+
+    For Supabase JWTs: adds the token to the Redis denylist until it
+    expires naturally. The frontend should also call Supabase's sign-out
+    to fully invalidate the session on Supabase's side.
+
+    For legacy custom tokens: same revocation behaviour via the denylist.
+    """
     token = current.get("token")
     if token:
         revoke_token(token)

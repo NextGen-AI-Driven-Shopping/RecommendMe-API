@@ -1,9 +1,11 @@
-"""Signed auth token helpers.
+"""Legacy custom auth token helpers (transition period).
 
-The app issues compact HMAC-signed bearer tokens that can be validated
-without a server-side session per request. A small in-memory denylist
-records hashes of tokens that have been logged out or otherwise revoked
-so they cannot be reused before their natural expiry.
+This module is kept during the migration to Supabase Auth.
+New code should use Supabase-issued JWTs verified via supabase_jwt.py.
+
+Token revocation uses Redis when available (required for multi-instance
+deployments). Falls back to an in-memory denylist for local development
+without Redis — not suitable for production multi-worker setups.
 """
 
 from __future__ import annotations
@@ -17,9 +19,12 @@ import time
 from typing import Any
 
 from app.config.settings import get_settings
+from app.core.redis_client import get_redis_client
 
 _DENYLIST_LOCK = threading.RLock()
-_token_denylist: dict[str, int] = {}  # sha256(token) -> exp timestamp
+_token_denylist: dict[str, int] = {}  # sha256(token) -> exp timestamp (in-memory fallback)
+
+_DENYLIST_KEY_PREFIX = "denylist:token:"
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -35,13 +40,19 @@ def _token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _prune_denylist(now: int) -> None:
+def _prune_memory_denylist(now: int) -> None:
     expired = [key for key, exp in _token_denylist.items() if exp <= now]
     for key in expired:
         _token_denylist.pop(key, None)
 
 
 def create_auth_token(*, user_id: str, session_id: str | None = None) -> str:
+    """Create a signed bearer token.
+
+    NOTE: This is a transitional helper used while Supabase Auth is being
+    integrated. Once Supabase issues tokens for all flows, this function
+    and its callers will be removed.
+    """
     settings = get_settings()
     issued_at = int(time.time())
     expires_at = issued_at + settings.AUTH_TOKEN_TTL_MINUTES * 60
@@ -59,6 +70,7 @@ def create_auth_token(*, user_id: str, session_id: str | None = None) -> str:
 
 
 def verify_auth_token(token: str) -> dict[str, Any] | None:
+    """Verify a legacy custom-signed token. Returns payload or None."""
     settings = get_settings()
     if not token or "." not in token:
         return None
@@ -82,21 +94,52 @@ def verify_auth_token(token: str) -> dict[str, Any] | None:
 
 
 def revoke_token(token: str) -> None:
-    """Add the token's fingerprint to the denylist until its natural expiry."""
+    """Add the token to the denylist until its natural expiry.
+
+    Uses Redis when available. Falls back to in-memory denylist.
+    The in-memory fallback is not shared across workers — prefer Redis
+    in any multi-instance deployment.
+    """
     payload = verify_auth_token(token)
     if not payload:
         return
     exp = int(payload.get("exp", 0))
-    if exp <= int(time.time()):
+    now = int(time.time())
+    if exp <= now:
         return
+
+    ttl = exp - now
+    fingerprint = _token_fingerprint(token)
+    redis = get_redis_client()
+
+    if redis:
+        try:
+            redis.setex(f"{_DENYLIST_KEY_PREFIX}{fingerprint}", ttl, "1")
+            return
+        except Exception:
+            pass
+
+    # In-memory fallback
     with _DENYLIST_LOCK:
-        _prune_denylist(int(time.time()))
-        _token_denylist[_token_fingerprint(token)] = exp
+        _prune_memory_denylist(now)
+        _token_denylist[fingerprint] = exp
 
 
 def is_token_revoked(token: str) -> bool:
+    """Check whether the token has been added to the denylist."""
     if not token:
         return False
+
+    fingerprint = _token_fingerprint(token)
+    redis = get_redis_client()
+
+    if redis:
+        try:
+            return bool(redis.exists(f"{_DENYLIST_KEY_PREFIX}{fingerprint}"))
+        except Exception:
+            pass
+
+    # In-memory fallback
     with _DENYLIST_LOCK:
-        _prune_denylist(int(time.time()))
-        return _token_fingerprint(token) in _token_denylist
+        _prune_memory_denylist(int(time.time()))
+        return fingerprint in _token_denylist
