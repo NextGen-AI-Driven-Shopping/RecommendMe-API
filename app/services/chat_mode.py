@@ -103,6 +103,21 @@ def _build_context_prefix(
     return "\n".join(parts)
 
 
+# ── Think-block stripper ──────────────────────────────────────────────────────
+
+def _strip_think_blocks(text: str) -> str:
+    """
+    Remove <think>...</think> reasoning blocks emitted by some models
+    (e.g. DeepSeek-R1, QwQ) before the structured response is parsed.
+    Also handles unclosed <think> tags that run to end of string.
+    """
+    # Remove closed blocks: <think>...</think>
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove unclosed blocks: <think>... to end of string
+    text = re.sub(r"<think>.*",          "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
 # ── Response parser ───────────────────────────────────────────────────────────
 
 def _parse_structured_response(raw: str) -> tuple[str, list[str]]:
@@ -113,6 +128,9 @@ def _parse_structured_response(raw: str) -> tuple[str, list[str]]:
         (answer_text, selected_product_names)
         selected_product_names is [] if AI picked no specific products.
     """
+    # Strip any think blocks before parsing so they don't pollute the answer
+    raw = _strip_think_blocks(raw)
+
     answer_match  = re.search(r"<answer>(.*?)</answer>",   raw, re.DOTALL | re.IGNORECASE)
     selected_match = re.search(r"<selected>(.*?)</selected>", raw, re.DOTALL | re.IGNORECASE)
 
@@ -316,7 +334,11 @@ async def answer_chat_followup(
         logger.warning("[chat_mode] All providers failed for question=%s", question[:80])
         return _FALLBACK_ERROR  # None signals "don't show products"
 
-    answer_text, selected_names = _parse_structured_response(raw.strip())
+    # Strip think blocks before parsing — some models (DeepSeek-R1, QwQ)
+    # emit <think>...</think> reasoning blocks before the actual response.
+    clean_raw = _strip_think_blocks(raw.strip())
+
+    answer_text, selected_names = _parse_structured_response(clean_raw)
 
     logger.info(
         "[chat_mode] answer_len=%d selected_count=%d selected=%s",
