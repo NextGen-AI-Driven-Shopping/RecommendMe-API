@@ -20,8 +20,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.core.auth import get_optional_user
 from app.core.exceptions import AIServiceException, ValidationException
 from app.core.logger import get_logger
 from app.models.internal import ProductType, QuestionWithOptions, RecommendationResult
@@ -174,7 +175,11 @@ def _build_full_context_query(
 
 
 @router.post("/query", response_model=QueryResponse)
-async def handle_query(payload: QueryRequest, request: Request) -> QueryResponse:
+async def handle_query(
+    payload: QueryRequest,
+    request: Request,
+    current=Depends(get_optional_user),
+) -> QueryResponse:
     """
     Process query through the full Flow.md pipeline.
 
@@ -210,13 +215,23 @@ async def handle_query(payload: QueryRequest, request: Request) -> QueryResponse
     serialized_answers = _serialize_clarification_answers(payload.clarification)
     conversation = payload.conversation_history or []
 
-    existing_session = get_session(session_id) or {
+    prior_session = get_session(session_id)
+    if prior_session is not None:
+        owner_id = prior_session.get("user_id")
+        if owner_id:
+            if not current:
+                raise HTTPException(status_code=401, detail="Authentication required to continue this session.")
+            if current["user"].user_id != owner_id:
+                raise HTTPException(status_code=403, detail="Access denied.")
+
+    existing_session = prior_session or {
         "session_id": session_id,
         "status": "new",
         "title": _build_session_title(clean_query),
         "messages": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        **({"user_id": current["user"].user_id} if current else {}),
     }
     session_messages = list(existing_session.get("messages", []))
 

@@ -6,11 +6,10 @@ exception handlers, and mounts the versioned API router.
 The lifespan context manager handles startup and shutdown events.
 """
 
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.core.cache_cleaner import clear_all_caches
@@ -54,19 +53,6 @@ app = FastAPI(
 configure_cors(app)
 register_middleware(app)
 register_exception_handlers(app)
-
-
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-    if os.environ.get("APP_ENV", "development").lower() == "production":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-    return response
 
 app.include_router(v1_router)
 

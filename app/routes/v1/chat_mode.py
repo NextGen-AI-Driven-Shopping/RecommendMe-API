@@ -1,4 +1,9 @@
-"""Post-results chat mode route handlers (Step 8 of Flow.md)."""
+"""Post-results chat mode route handlers (Step 8 of Flow.md).
+
+Ownership rules mirror /sessions: when the underlying session belongs to
+an authenticated user, the caller must present a matching bearer token.
+Anonymous sessions stay accessible by id alone.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +42,6 @@ async def chat_mode_followup(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    # Ownership check: if the session belongs to a user, the caller must be that user.
     session_user_id = session.get("user_id")
     if session_user_id:
         if not current:
@@ -45,7 +49,6 @@ async def chat_mode_followup(
         if current["user"].user_id != session_user_id:
             raise HTTPException(status_code=403, detail="Access denied.")
 
-    # Verify recommendation context exists
     has_context = bool(
         session.get("product_types")
         or session.get("categories")
@@ -55,11 +58,9 @@ async def chat_mode_followup(
     if not has_context:
         raise HTTPException(status_code=400, detail="No recommendation context found for this session.")
 
-    # Get user profile for personalization
     profile_context = None
-    user_id = session.get("user_id")
-    if user_id:
-        profile = profile_store.get(user_id)
+    if session_user_id:
+        profile = profile_store.get(session_user_id)
         if profile:
             profile_context = profile.to_public_dict()
 

@@ -177,6 +177,21 @@ class CsvAuthService:
                 }
             )
 
+    @staticmethod
+    def _validate_password_strength(password: str) -> None:
+        """Reject passwords below the minimum strength bar.
+
+        Existing accounts created against the older 6-char minimum keep
+        working — strength is only enforced on new credentials (signup
+        and password reset).
+        """
+        if len(password) < 8:
+            raise AuthValidationError("Password must be at least 8 characters.")
+        if not re.search(r"[A-Za-z]", password):
+            raise AuthValidationError("Password must contain at least one letter.")
+        if not re.search(r"\d", password):
+            raise AuthValidationError("Password must contain at least one number.")
+
     def signup(
         self,
         *,
@@ -188,8 +203,7 @@ class CsvAuthService:
         password: str,
     ) -> AuthUser:
         normalized_email, normalized_phone = self._validate_contact(email, phone)
-        if len(password) < 6:
-            raise AuthValidationError("Password must be at least 6 characters.")
+        self._validate_password_strength(password)
 
         with _FILE_LOCK:
             users = self._read_users()
@@ -308,8 +322,7 @@ class CsvAuthService:
         return None
 
     def update_password(self, *, user_id: str, new_password: str) -> None:
-        if len(new_password) < 6:
-            raise AuthValidationError("Password must be at least 6 characters.")
+        self._validate_password_strength(new_password)
 
         with _FILE_LOCK:
             users = self._read_users()
