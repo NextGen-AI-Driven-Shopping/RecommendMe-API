@@ -25,3 +25,23 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
 
     return {"user": user, "session_id": payload.get("sid")}
+
+
+def get_optional_user(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme)):
+    """Returns the current user if a valid token is present, otherwise None.
+
+    Use this on endpoints that are accessible anonymously but should enforce
+    ownership when the session belongs to an authenticated user.
+    """
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+
+    payload = verify_auth_token(credentials.credentials)
+    if not payload or not payload.get("sub"):
+        return None
+
+    user = _auth_service.get_user_by_id(payload["sub"])
+    if not user:
+        return None
+
+    return {"user": user, "session_id": payload.get("sid")}
