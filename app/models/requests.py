@@ -209,7 +209,8 @@ class ProfileUpdateRequest(BaseModel):
     age: Optional[int] = Field(default=None, ge=13, le=120)
     interests: Optional[List[str]] = Field(default=None)
     about: Optional[str] = Field(default=None, max_length=1000)
-    avatar_url: Optional[str] = Field(default=None, max_length=500)
+    # Allow data: URLs for client-side avatar uploads (~2 MB image → ~2.7 MB base64).
+    avatar_url: Optional[str] = Field(default=None, max_length=5_000_000)
     avatar_file_path: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("username", "gender", "about", "avatar_url", "avatar_file_path", mode="before")

@@ -140,7 +140,6 @@ async def login(payload: LoginRequest, request: Request) -> AuthLoginResponse:
             {
                 "session_id": payload.session_id,
                 "user_id": user.user_id,
-                "status": "authenticated",
             },
         )
 

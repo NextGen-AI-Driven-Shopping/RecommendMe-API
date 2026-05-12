@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import uuid
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.config.settings import get_settings
 from app.core.auth import get_current_user
 from app.models.requests import ProfileUpdateRequest
 from app.models.responses import AvatarOptionsResponse, ProfileResponse, UserProfile
@@ -74,47 +70,11 @@ async def list_avatars() -> AvatarOptionsResponse:
     ])
 
 
-_ALLOWED_AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-_AVATAR_MAGIC_BYTES = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"RIFF", "image/webp"),
-)
-
-
 @router.post("/avatar/upload", response_model=ProfileResponse)
 async def upload_avatar(image: UploadFile = File(...), current=Depends(get_current_user)) -> ProfileResponse:
-    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=400, detail="Only JPG, PNG, and WEBP images are allowed.")
-
-    contents = await image.read()
-    if len(contents) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Avatar image must be 2MB or smaller.")
-
-    if not any(contents.startswith(magic) for magic, _ in _AVATAR_MAGIC_BYTES):
-        raise HTTPException(status_code=400, detail="Uploaded file is not a recognised image.")
-
-    settings = get_settings()
-    upload_root = Path(settings.PROFILE_UPLOAD_DIR)
-    if not upload_root.is_absolute():
-        backend_root = Path(__file__).resolve().parents[2]
-        upload_root = backend_root / upload_root
-    upload_root = upload_root.resolve()
-    upload_root.mkdir(parents=True, exist_ok=True)
-
-    raw_ext = Path(image.filename or "avatar.png").suffix.lower()
-    file_ext = raw_ext if raw_ext in _ALLOWED_AVATAR_EXTENSIONS else ".png"
-    file_name = f"{current['user'].user_id}-{uuid.uuid4().hex}{file_ext}"
-    file_path = (upload_root / file_name).resolve()
-
-    # Defence-in-depth: refuse to write outside the configured upload root.
-    if upload_root not in file_path.parents and file_path.parent != upload_root:
-        raise HTTPException(status_code=400, detail="Invalid upload path.")
-    file_path.write_bytes(contents)
-
-    updated = profile_store.update(current["user"].user_id, avatar_file_path=str(file_path), avatar_url=None)
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Profile not found.")
-    return ProfileResponse(profile=UserProfile(**updated.to_public_dict()))
+    raise HTTPException(
+        status_code=400,
+        detail="Image uploads are disabled. Choose an avatar URL via /profile or /profile/update.",
+    )
 
 
